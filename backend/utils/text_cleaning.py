@@ -1,7 +1,6 @@
 """Text cleaning utilities for source processing."""
 
 import re
-import unicodedata
 
 # Matches exactly the source-number prefixes used by source detection.
 REF_NUMBER_PREFIX_PATTERNS = [
@@ -42,13 +41,6 @@ def normalize_author_conjunctions(text: str) -> str:
     return text
 
 
-def normalize_text(text: str) -> str:
-    """Normalize Unicode text for comparison."""
-    text = unicodedata.normalize("NFKD", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
 def strip_source_noise(text: str) -> str:
     """Remove leading source numbering and access-date fragments."""
     cleaned = text or ""
@@ -64,16 +56,3 @@ def strip_source_noise(text: str) -> str:
 
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
-
-
-def clean_source_text(text: str) -> str:
-    """Clean a source text for search queries."""
-    text = strip_source_noise(text)
-    # Remove URLs
-    text = re.sub(r"https?://\S+", "", text)
-    # Remove DOIs
-    text = re.sub(r"doi[:\s]*10\.\S+", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"10\.\d{4,9}/\S+", "", text)
-    # Normalize whitespace
-    text = re.sub(r"\s+", " ", text).strip()
-    return text

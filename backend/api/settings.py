@@ -13,11 +13,6 @@ from services.settings_store import get_current_settings, save_settings
 
 router = APIRouter()
 
-# Re-export the public accessor for any external caller still importing
-# `get_current_settings` from `api.settings`. The canonical home is now
-# `services.settings_store` — this module is just the FastAPI router.
-__all__ = ["get_current_settings", "router"]
-
 
 @router.get("/settings")
 async def get_settings():

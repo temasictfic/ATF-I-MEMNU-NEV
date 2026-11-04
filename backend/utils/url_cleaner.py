@@ -54,16 +54,6 @@ def clean_extracted_url(text: str | None) -> str | None:
     return url or None
 
 
-def find_first_url(text: str | None) -> str | None:
-    """Find the first URL in free text, repairing wrap breaks."""
-    if not text:
-        return None
-    m = _URL_START.search(text)
-    if not m:
-        return None
-    return clean_extracted_url(text[m.start():])
-
-
 def find_best_url(text: str | None) -> str | None:
     """Find the most specific URL in free text.
 

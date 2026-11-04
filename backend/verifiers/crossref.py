@@ -266,14 +266,17 @@ def _extract_family_name(author: str) -> str:
         candidate = raw.split(",", 1)[0].strip()
     else:
         # Initials-first style: "A. Bajaj" -> "Bajaj"
-        initials_first = re.match(r"^(?:[A-Z]\.?(?:\s+|$))+([A-Z][A-Za-z'\-]+)$", raw)
+        initials_first = re.match(r"^(?:[^\W\d_]\.?(?:\s+|$))+([^\W\d_][\w'\-]+)$", raw)
         if initials_first:
             candidate = initials_first.group(1).strip()
         else:
             parts = [p for p in re.split(r"\s+", raw) if p]
             candidate = parts[-1] if parts else ""
 
-    candidate = re.sub(r"[^A-Za-z\-']", "", candidate).strip("-'")
+    # Keep letters from any script: the old ASCII-only filter turned
+    # "Öztürk" into "ztrk" and "Şahin" into "ahin", which wrecked
+    # query.author for Turkish citations.
+    candidate = "".join(ch for ch in candidate if ch.isalpha() or ch in "-'").strip("-'")
     if len(candidate) < 2:
         return ""
     return candidate

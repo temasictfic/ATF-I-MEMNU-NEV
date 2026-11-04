@@ -32,6 +32,11 @@ _load_error: str | None = None
 # the backend is safe to receive real traffic — we wait for preload to
 # either populate the pipeline or commit to regex fallback.
 _preload_complete = False
+# Set once preload has given up. Without it every later extraction call
+# retried loading the 125 MB model (and logged the same failure) when the
+# model was missing or broken. Cleared by `reload_pipeline()`, which the
+# desktop host calls after it finishes downloading the model.
+_load_failed = False
 
 # RoBERTa's positional embedding is 514 (512 content + 2 special). Keep the
 # tokenizer capped at 512 total so input_ids never exceed the model window.
@@ -80,11 +85,6 @@ def is_preload_complete() -> bool:
     to the regex fallback.
     """
     return _preload_complete
-
-
-def get_pipeline_sync() -> Any | None:
-    """Return the pipeline if already loaded, None otherwise. Non-blocking."""
-    return _pipeline
 
 
 def _detect_ort_provider() -> str:
@@ -302,6 +302,9 @@ async def get_pipeline() -> Any | None:
     if _pipeline is not None:
         return _pipeline
 
+    if _load_failed:
+        return None
+
     async with _pipeline_lock:
         if _pipeline is not None:
             return _pipeline
@@ -359,7 +362,33 @@ async def preload_pipeline() -> None:
                 "NER model preload failed after retry (%s); committing to regex fallback",
                 _load_error,
             )
+            _mark_failed()
     finally:
         # Flip the readiness flag no matter what — /api/ready will now
         # return 200 and the main process can unblock the UI.
         _preload_complete = True
+
+
+def _mark_failed() -> None:
+    global _load_failed
+    _load_failed = True
+
+
+async def reload_pipeline(model_path: str | None = None) -> bool:
+    """(Re)load the NER model, optionally from a new directory.
+
+    Used by the desktop host once the one-time model download has finished
+    (the model is no longer bundled with the app). Returns True when the
+    pipeline is loaded afterwards.
+    """
+    global _pipeline, _load_failed, _load_error
+    if model_path:
+        settings.ner_local_model_path = model_path
+    async with _pipeline_lock:
+        _pipeline = None
+        _load_failed = False
+        _load_error = None
+    result = await get_pipeline()
+    if result is None:
+        _mark_failed()
+    return result is not None

@@ -9,10 +9,10 @@ persistence + accessor calls here.
 """
 
 import json
-from pathlib import Path
 
 from config import settings as app_config
 from models.settings import AppSettings
+from utils.atomic_io import atomic_write_text
 
 
 _current_settings: AppSettings | None = None
@@ -122,6 +122,5 @@ def _migrate_databases(s: AppSettings) -> AppSettings:
 def save_settings(s: AppSettings) -> None:
     global _current_settings
     settings_path = app_config.get_settings_path()
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(s.model_dump_json(indent=2), encoding="utf-8")
+    atomic_write_text(settings_path, s.model_dump_json(indent=2))
     _current_settings = s

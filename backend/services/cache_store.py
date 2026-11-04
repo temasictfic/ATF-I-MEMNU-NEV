@@ -25,6 +25,7 @@ from models.source import SourceRectangle, SourceStatus
 from models.verification_result import MatchResult, VerificationResult
 
 from services.search_urls import build_google_urls, build_search_url
+from utils.atomic_io import atomic_write_text
 
 # ---------------------------------------------------------------------------
 # pdf_id validation (defends every cache-file build site against traversal)
@@ -104,7 +105,7 @@ def save_sources_cache(
     if page_count is not None:
         data["page_count"] = int(page_count)
     try:
-        cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        atomic_write_text(cache_file, json.dumps(data, ensure_ascii=False))
     except Exception as e:
         print(f"[save_sources_cache] FAILED to write {cache_file}: {e}", flush=True)
         raise
@@ -150,18 +151,6 @@ def load_sources_for_pdf(pdf_id: str) -> list[SourceRectangle] | None:
     """Public helper used by verification.py: read the cached source list."""
     cached = load_sources_cache(pdf_id)
     return None if cached is None else cached[0]
-
-
-def delete_sources_cache(pdf_id: str) -> None:
-    """Drop both the source and verify cache files for a PDF."""
-    _validate_pdf_id(pdf_id)
-    for name in (f"{pdf_id}.json", f"verify_{pdf_id}.json"):
-        cache_file = _safe_cache_path(name)
-        if cache_file.exists():
-            try:
-                cache_file.unlink()
-            except Exception as e:  # noqa: BLE001
-                print(f"[delete_sources_cache] failed to delete {cache_file}: {e}", flush=True)
 
 
 def flip_sources_status(pdf_id: str, new_status: SourceStatus) -> bool:
@@ -215,7 +204,7 @@ def save_verify_cache(pdf_id: str, results: dict[str, VerificationResult]) -> No
     _validate_pdf_id(pdf_id)
     cache_file = _safe_cache_path(f"verify_{pdf_id}.json")
     data = {sid: _serialise_result(r) for sid, r in results.items()}
-    cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(cache_file, json.dumps(data, ensure_ascii=False))
 
 
 def _hydrate_match(entry: dict, parsed_title: str) -> tuple[MatchResult, bool]:
@@ -275,6 +264,6 @@ def clean_verify_cache(pdf_id: str, current_source_ids: set[str]) -> None:
         data = json.loads(cache_file.read_text(encoding="utf-8"))
         cleaned = {k: v for k, v in data.items() if k in current_source_ids}
         if len(cleaned) != len(data):
-            cache_file.write_text(json.dumps(cleaned, ensure_ascii=False), encoding="utf-8")
+            atomic_write_text(cache_file, json.dumps(cleaned, ensure_ascii=False))
     except Exception:  # noqa: BLE001, S110
         pass

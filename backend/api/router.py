@@ -30,11 +30,9 @@ async def health():
 async def ready():
     """Readiness probe: 200 once preload_pipeline() has finished trying.
 
-    Covers the first-launch-after-auto-update window where the 125 MB
-    ONNX model is still warming up. The main process polls this endpoint
-    before unblocking the UI so the user never sees the verify button
-    while NER extraction would silently fall through to regex on garbage
-    queries.
+    Covers the window where the 125 MB ONNX model is still warming up.
+    The desktop host reads the same state in-process; the endpoint stays
+    for diagnostics and standalone (dev) runs.
 
     Returns 200 with a descriptive `ner` state field when preload is
     done, 503 while it is still loading. The caller can surface the
@@ -54,15 +52,6 @@ async def ready():
         status_code=503,
         content={"status": "initializing", "ner": "loading" if is_loading() else "pending"},
     )
-
-
-@api_router.post("/shutdown")
-async def do_shutdown():
-    """Graceful shutdown endpoint called by Electron before process termination."""
-    import server_state
-    if server_state.uvicorn_server:
-        server_state.uvicorn_server.should_exit = True
-    return {"status": "shutting_down"}
 
 
 api_router.include_router(parsing_router)

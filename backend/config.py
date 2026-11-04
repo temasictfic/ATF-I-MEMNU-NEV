@@ -2,7 +2,7 @@ import os
 import sys
 from pathlib import Path
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _default_output_dir() -> str:
@@ -11,9 +11,9 @@ def _default_output_dir() -> str:
         return env_output
 
     if getattr(sys, "frozen", False):
-        # Mirror src/main/index.ts STABLE_USERDATA_DIR. Keep this string in
-        # sync with that constant — both must point at the same directory
-        # so the backend reads the same settings.json the renderer writes,
+        # Mirror atfi_app.paths.USER_DATA_DIR_NAME (historically Electron's
+        # STABLE_USERDATA_DIR). Both must point at the same directory so
+        # settings, API keys and caches survive the Electron -> Python port,
         # even if the env var is somehow not propagated.
         fallback = (
             Path.home() / "AppData" / "Roaming" / "atfi-memnu-app" / "output"
@@ -24,17 +24,15 @@ def _default_output_dir() -> str:
 
 
 def _default_ner_local_model_path() -> str:
-    """Path to the bundled fine-tuned INT8 ONNX NER model, or "" if not bundled.
+    """Path to the fine-tuned INT8 ONNX NER model, or "" if it isn't present.
 
-    Resolves `backend/models/citation-ner-int8` both in dev (source checkout)
-    and in a packaged Electron/PyInstaller build (via _MEIPASS).
+    The model is no longer bundled with releases: the desktop host downloads
+    it once per machine and passes its location via
+    ``ATFI_NER_LOCAL_MODEL_PATH`` (see ``atfi_app.model_manager``). In a
+    source checkout ``scripts/fetch_model.py`` places it under
+    ``backend/models/citation-ner-int8``.
     """
     candidates: list[Path] = []
-    if getattr(sys, "frozen", False):
-        meipass = getattr(sys, "_MEIPASS", None)
-        if meipass:
-            candidates.append(Path(meipass) / "models" / "citation-ner-int8")
-            candidates.append(Path(meipass) / "backend" / "models" / "citation-ner-int8")
     candidates.append(Path(__file__).resolve().parent / "models" / "citation-ner-int8")
     for c in candidates:
         if c.exists() and any(c.glob("*.onnx")):
@@ -46,8 +44,7 @@ class Settings(BaseSettings):
     port: int = 0
     # Loopback only: this is a desktop companion backend, not a network
     # service. Binding 0.0.0.0 would expose it to the LAN whenever the
-    # firewall permits it, plus enable trivial DoS via /api/shutdown from
-    # any same-LAN host.
+    # firewall permits it.
     host: str = "127.0.0.1"
     output_dir: str = _default_output_dir()
 
@@ -60,21 +57,10 @@ class Settings(BaseSettings):
     ner_local_model_path: str = _default_ner_local_model_path()
     ner_enabled: bool = True
 
-    class Config:
-        env_prefix = "ATFI_"
-
-    def get_reports_dir(self) -> Path:
-        p = Path(self.output_dir) / "reports"
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+    model_config = SettingsConfigDict(env_prefix="ATFI_")
 
     def get_cache_dir(self) -> Path:
         p = Path(self.output_dir) / "cache"
-        p.mkdir(parents=True, exist_ok=True)
-        return p
-
-    def get_models_dir(self) -> Path:
-        p = Path(self.output_dir) / "models"
         p.mkdir(parents=True, exist_ok=True)
         return p
 

@@ -20,11 +20,11 @@ from models.verification_result import (
 )
 from pydantic import BaseModel
 from services.cache_store import (
-    _validate_pdf_id,
     load_sources_for_pdf,
     load_verify_cache,
     save_verify_cache,
 )
+from services.background_tasks import spawn
 from services.job_store import verify_jobs, verify_results
 from services.scoring_constants import LOW_PARSE_CONFIDENCE_THRESHOLD
 from services.search_urls import build_search_url
@@ -32,10 +32,6 @@ from services.search_urls import build_search_url
 from api.websocket import manager
 
 router = APIRouter()
-
-
-class VerifyRequest(BaseModel):
-    pdf_ids: list[str]
 
 
 class VerifySourceRequest(BaseModel):
@@ -68,9 +64,10 @@ async def start_batch_verification(request: VerifyBatchRequest):
     job_id = str(uuid.uuid4())[:8]
     verify_jobs[job_id] = {"status": "running", "pdfs": request.pdf_ids}
 
-    asyncio.create_task(_verify_batch(
-        job_id, request.pdf_ids, request.texts, set(request.excluded_ids)
-    ))
+    spawn(
+        _verify_batch(job_id, request.pdf_ids, request.texts, set(request.excluded_ids)),
+        name=f"verify-batch-{job_id}",
+    )
     return {"job_id": job_id}
 
 
@@ -115,81 +112,6 @@ async def _verify_batch(job_id: str, pdf_ids: list[str], texts: dict[str, str], 
         raise
 
 
-@router.post("/verify")
-async def start_verification(request: VerifyRequest):
-    job_id = str(uuid.uuid4())[:8]
-    verify_jobs[job_id] = {"status": "running", "pdfs": request.pdf_ids}
-
-    asyncio.create_task(_verify_all_pdfs(job_id, request.pdf_ids))
-    return {"job_id": job_id}
-
-
-async def _verify_all_pdfs(job_id: str, pdf_ids: list[str]):
-    from services.verification_orchestrator import verify_pdf_sources
-
-    await manager.send_log("info", f"Starting verification for {len(pdf_ids)} PDFs")
-
-    try:
-        for pid in pdf_ids:
-            sources = _load_sources_or_empty(pid)
-            if not sources:
-                continue
-            try:
-                await verify_pdf_sources(pid, sources, verify_results, job_id=job_id)
-            except Exception as e:  # noqa: BLE001
-                await manager.send_log("error", f"Verification failed for {pid}: {e}")
-
-        for pdf_id in pdf_ids:
-            if verify_results.get(pdf_id):
-                try:
-                    save_verify_cache(pdf_id, verify_results[pdf_id])
-                except Exception as e:  # noqa: BLE001
-                    await manager.send_log("error", f"Cache write failed for {pdf_id}: {e}")
-
-        verify_jobs[job_id]["status"] = "done"
-        await manager.send_log("success", "Verification complete for all PDFs")
-    except Exception as e:
-        verify_jobs[job_id]["status"] = "failed"
-        verify_jobs[job_id]["error"] = str(e)
-        await manager.send_log("error", f"Verification job failed: {e}")
-        raise
-
-
-@router.post("/verify/pdf/{pdf_id}")
-async def reverify_pdf(pdf_id: str):
-    _validate_pdf_id(pdf_id)
-    sources = _load_sources_or_empty(pdf_id)
-    if not sources:
-        raise HTTPException(status_code=404, detail="PDF not found")
-
-    job_id = str(uuid.uuid4())[:8]
-    # Register before launch so the returned job_id is pollable via
-    # GET /verify/status/{job_id}. Previously this was missing, so the
-    # client could poll a known-good id and get 404 back.
-    verify_jobs[job_id] = {"status": "running", "pdfs": [pdf_id]}
-
-    asyncio.create_task(_reverify_pdf_job(job_id, pdf_id, sources))
-    return {"job_id": job_id}
-
-
-async def _reverify_pdf_job(job_id: str, pdf_id: str, sources: list[SourceRectangle]):
-    from services.verification_orchestrator import verify_pdf_sources
-
-    try:
-        await verify_pdf_sources(pdf_id, sources, verify_results, job_id=job_id)
-        if verify_results.get(pdf_id):
-            try:
-                save_verify_cache(pdf_id, verify_results[pdf_id])
-            except Exception as e:  # noqa: BLE001
-                await manager.send_log("error", f"Cache write failed for {pdf_id}: {e}")
-        verify_jobs[job_id]["status"] = "done"
-    except Exception as e:
-        verify_jobs[job_id]["status"] = "failed"
-        verify_jobs[job_id]["error"] = str(e)
-        await manager.send_log("error", f"Reverify job failed for {pdf_id}: {e}")
-        raise
-
-
 @router.post("/verify/source/{pdf_id}/{source_id}")
 async def reverify_source(pdf_id: str, source_id: str, request: VerifySourceRequest):
     sources = _load_sources_or_empty(pdf_id)
@@ -207,10 +129,13 @@ async def reverify_source(pdf_id: str, source_id: str, request: VerifySourceRequ
     job_id = str(uuid.uuid4())[:8]
     verify_jobs[job_id] = {"status": "running", "pdfs": [pdf_id]}
 
-    # Use updated text if provided
-    text = request.text if request.text is not None else source.text
-    task = asyncio.create_task(
-        _reverify_source_job(job_id, pdf_id, source_id, text)
+    # Use the edited text if one was provided. A blank string means "no
+    # edit" (the renderer used to send "" for untouched cards, which made the
+    # backend verify an empty query instead of the stored source text).
+    text = request.text if request.text and request.text.strip() else source.text
+    task = spawn(
+        _reverify_source_job(job_id, pdf_id, source_id, text),
+        name=f"verify-source-{source_id}",
     )
     _register_task(source_id, task)
     return {"job_id": job_id}

@@ -19,22 +19,14 @@ from fastapi import APIRouter, HTTPException
 from models.source import SourceRectangle
 from pydantic import BaseModel
 from services.cache_store import (
-    _validate_pdf_id,
     clean_verify_cache,
-    delete_sources_cache,
     flip_sources_status,
     load_sources_cache,
-    load_sources_for_pdf,  # re-exported for any external callers
     save_sources_cache,
 )
 from services.job_store import verify_results
 
 from api.websocket import manager
-
-# Backwards-compatible re-export: `load_sources_for_pdf` used to live here and
-# was imported from `api.parsing` by other code. Re-exporting keeps that
-# import path working while the canonical home is now cache_store.
-__all__ = ["load_sources_for_pdf", "router"]
 
 router = APIRouter()
 
@@ -129,15 +121,6 @@ async def unapprove_pdf(pdf_id: str):
         raise HTTPException(status_code=404, detail="PDF not found")
     await manager.broadcast("parse_unapproved", {"pdf_id": pdf_id})
     await manager.send_log("info", f"Approval revoked for {pdf_id}", pdf_id=pdf_id)
-    return {"success": True}
-
-
-@router.delete("/parse/pdf/{pdf_id}")
-async def remove_pdf(pdf_id: str):
-    """Drop the cached source + verify JSON files for a PDF."""
-    _validate_pdf_id(pdf_id)
-    delete_sources_cache(pdf_id)
-    verify_results.pop(pdf_id, None)
     return {"success": True}
 
 

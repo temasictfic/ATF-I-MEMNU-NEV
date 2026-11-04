@@ -1,4 +1,4 @@
-"""Per-domain rate limiter using token bucket algorithm."""
+"""Per-domain request pacing, sliding-window quotas and 429 parking."""
 
 import asyncio
 import collections
@@ -40,10 +40,10 @@ class SlidingWindowQuota:
 
 class RateLimiter:
     def __init__(self):
-        self._buckets: dict[str, dict] = {}
+        self._last_request: dict[str, float] = {}
+        self._domain_locks: dict[str, asyncio.Lock] = {}
         self._parked_until: dict[str, float] = {}
         self._windows: dict[str, SlidingWindowQuota] = {}
-        self._lock = asyncio.Lock()
 
         # Default rates: seconds between requests per host.
         # Tuned to stay under each API's documented unauthenticated limit
@@ -51,7 +51,6 @@ class RateLimiter:
         # API keys get higher effective throughput because the keyed call
         # path on S2 / PubMed is already well under the paced rate.
         self._rates = {
-            "scholar.google.com": 2.0,
             # arXiv API User's Manual explicitly asks for ≤1 req / 3 s.
             # Earlier we used 1.5 s to minimize pacing latency, but under
             # sustained 3-way source concurrency Fastly still fingerprints
@@ -147,7 +146,18 @@ class RateLimiter:
         process. The replacement preserves no history; it starts a fresh
         window so a previously full anon-bucket doesn't strand an authed
         user behind 60 dead timestamps.
+
+        Re-registering the *same* cap is a no-op. OpenAIRE's token manager
+        re-asserts the anonymous cap on every anonymous request, and when
+        that reset the history every time, the 60/hour cap never took effect.
         """
+        existing = self._windows.get(domain)
+        if (
+            existing is not None
+            and existing.max_requests == max_requests
+            and existing.window_seconds == window_seconds
+        ):
+            return
         self._windows[domain] = SlidingWindowQuota(max_requests, window_seconds)
 
     def consume_window(self, domain: str) -> bool:
@@ -184,29 +194,30 @@ class RateLimiter:
         hard failure. Parks are instead enforced by ``check_parked_url``
         at each request site, which fails fast so the source is marked
         ``rate_limited`` immediately and the next DB can proceed.
+
+        Waiters for one domain queue on a per-domain lock and each sleeps
+        only while holding it. A waiter that is cancelled (per-DB
+        ``wait_for`` timeout, user Stop, strong-match early exit) therefore
+        gives up its place without consuming a slot. The previous
+        implementation reserved ``last_request`` in the future *before*
+        sleeping and never released it on cancellation, so for slow-paced
+        hosts like arXiv every timed-out attempt pushed the queue a further
+        3 s out and the backlog fed itself.
         """
         if rate is None:
             rate = self._rates.get(domain, self._default_rate)
 
-        async with self._lock:
-            bucket = self._buckets.get(domain)
-            now = time.monotonic()
+        lock = self._domain_locks.get(domain)
+        if lock is None:
+            lock = self._domain_locks[domain] = asyncio.Lock()
 
-            if bucket is None:
-                self._buckets[domain] = {"last_request": now}
-                return
-
-            elapsed = now - bucket["last_request"]
-            if elapsed < rate:
-                wait_time = rate - elapsed
-                self._buckets[domain]["last_request"] = now + wait_time
-            else:
-                self._buckets[domain]["last_request"] = now
-                return
-
-        # Wait outside the lock
-        if elapsed < rate:
-            await asyncio.sleep(rate - elapsed)
+        async with lock:
+            last = self._last_request.get(domain)
+            if last is not None:
+                wait_time = last + rate - time.monotonic()
+                if wait_time > 0:
+                    await asyncio.sleep(wait_time)
+            self._last_request[domain] = time.monotonic()
 
 
 rate_limiter = RateLimiter()

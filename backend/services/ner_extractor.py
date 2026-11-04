@@ -12,8 +12,6 @@ from utils.url_cleaner import clean_extracted_url, find_best_url
 logger = logging.getLogger(__name__)
 
 YEAR_RE = re.compile(r"\b((?:19|20)\d{2})\b")
-DOI_RE = re.compile(r"10\.\d{4,9}/[^\s,;\"'}\]]+")
-URL_RE = re.compile(r"https?://[^\s,;\"'}\]]+")
 
 
 async def extract_fields_ner(raw_text: str) -> ParsedSource | None:

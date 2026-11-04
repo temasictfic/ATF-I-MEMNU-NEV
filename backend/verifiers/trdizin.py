@@ -90,8 +90,10 @@ def _hit_to_match(hit: dict[str, Any], source: ParsedSource, search_url: str) ->
         if name:
             authors.append(name)
 
-    # Year
-    year = src.get("publicationYear")
+    # Year: coerced to int because score_match does arithmetic on it. A
+    # string from the API ("2021") used to raise TypeError and surface as
+    # an "error" result for the whole database.
+    year = _coerce_year(src.get("publicationYear"))
 
     # DOI
     doi = src.get("doi", "") or ""
@@ -150,3 +152,15 @@ def _hit_to_match(hit: dict[str, Any], source: ParsedSource, search_url: str) ->
     }
 
     return score_match(source, candidate)
+
+
+def _coerce_year(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        digits = value.strip()[:4]
+        if digits.isdigit():
+            return int(digits)
+    return None
