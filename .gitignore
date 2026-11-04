@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[oc]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Build output
+build/
+dist/
+frontend/dist/
+packaging/build/
+packaging/dist/
+backend/build/
+backend/dist/
+
+# Node
+node_modules/
+*.tsbuildinfo
+
+# Model weights are downloaded at install/run time (see scripts/fetch_model.py)
+*.onnx
+
+# Local runtime data (dev)
+output/
+logs/
+*.log
+
+# Editors / tools
+.vscode/
+.idea/
+.playwright-mcp/
+test-fixtures/

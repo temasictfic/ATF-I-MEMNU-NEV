@@ -1,0 +1,49 @@
+# Varsayılan muaf listesi	
+# # ile başlayan satırlar yok sayılır. Eşleşme büyük/küçük harfe duyarsızdır.	
+# @year-before satırı silinirse yayın yılı filtresi devre dışı kalır.	
+# @non-doi-url satırı silinirse DOI olmayan bağlantı filtresi devre dışı kalır.	
+# DOI olmayan bağlantı istisnaları alan adı olarak tek başına yazılır, alt alan adları da eşleşir.	
+	
+@year-before 2001	2000 öncesi yayın
+@non-doi-url	DOI olmayan bağlantı
+	
+# DOI olmayan bağlantı istisnaları (Muaf olmayan bağlantılar. Her satır: alan adı)	
+nature.com	
+	
+# Her satır: kelime (Sütun A) ve sebep (Sütun B)	
+arXiv	arXiv ön baskı, hakemli değil
+Karayolları Genel Müdürlüğü	Diğer
+OECD	Diğer
+TÜİK	Diğer
+Cumhurbaşkanlığı Strateji ve Bütçe Başkanlığı	Diğer
+National Institute of Standards and Technology	Diğer
+European Commission	Diğer
+World Economic Forum	Diğer
+European Food Safety Authority	Diğer
+Food and Agricultural Organization	Diğer
+European Union Aviation Safety Agency	Diğer
+International Air Transport Association	Diğer
+International Civil Aviation Organization	Diğer
+Türkiye Cumhuriyeti Strateji ve Bütçe Başkanlığı	Diğer
+Yüksek Lisans Tezi	Tez
+Master Thesis	Tez
+Master's thesis	Tez
+Master Dissertation	Tez
+Doktora Tezi	Tez
+PhD Thesis	Tez
+PhD's Thesis	Tez
+PhD Dissertation	Tez
+Doctoral dissertation	Tez
+Proceeding	Bildiri
+Conference	Bildiri
+Konferans	Bildiri
+Book Chapter	Kitap Bölümü
+Kitap Bölümü	Kitap Bölümü
+CST Studio Suite	Diğer
+preprint	ön baskı
+ISBN	Kitap
+Patent No	Patent
+Patent Number	Patent
+T.C. Sağlık Bakanlığı	Diğer
+T.C. Milli Eğitim Bakanlığı	Diğer
+Savunma Sanayi Başkanlığı	Diğer

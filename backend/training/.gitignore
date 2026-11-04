@@ -1,0 +1,33 @@
+# Training artifacts — regenerable, too large, or user-specific.
+# The only committed data are `data/kaynaklar/labeled.jsonl` (hand-labeled
+# ground truth) and `reports/eval_*.md` (benchmark reports).
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# User's per-PDF parse cache dumps (drop fresh ones before running the pipeline)
+data/kaynaklar/input/
+
+# Produced by filter_candidates.py, regenerable
+data/kaynaklar/to_label.jsonl
+data/kaynaklar/skipped_apa.jsonl
+data/kaynaklar/unlabelable.jsonl
+
+# Produced by prepare_data.py, regenerable from labeled.jsonl + public HF dataset
+data/merged/
+data/merged.zip
+data/public/
+
+# Training checkpoints — can be re-produced by running the Colab notebook
+models/baseline/
+models/finetuned/
+models/finetuned.zip
+
+# ONNX artifacts — can be re-produced by export_onnx.py
+models/finetuned-onnx/
+models/finetuned-onnx-int8/
+
+# Ad-hoc labeling batch scripts (labels are preserved in labeled.jsonl)
+scripts/_batch_*.py

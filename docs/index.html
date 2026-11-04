@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Atf-I Memnu Downloads</title>
+    <meta
+      name="description"
+      content="Download the latest Atf-I Memnu desktop release from GitHub."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <div class="brand-dot" aria-hidden="true"></div>
+        <div class="brand-copy">
+          <p class="brand-kicker">Atf-I Memnu</p>
+          <h1>Download Center</h1>
+        </div>
+      </header>
+
+      <main class="content" id="content" aria-live="polite">
+        <section class="panel hero">
+          <p class="eyebrow">Desktop Citation Verification</p>
+          <p class="hero-text">
+            Always download the latest signed build directly from this repository's latest GitHub release.
+          </p>
+          <div class="download-guide" aria-label="Download type guide">
+            <article class="guide-card">
+              <h3>Setup EXE</h3>
+              <p>
+                Installs the app on your system with shortcuts and normal uninstall support. Best choice for most users.
+              </p>
+            </article>
+            <article class="guide-card">
+              <h3>Portable EXE</h3>
+              <p>
+                Runs immediately without installation. Keeps all files in one folder, useful for USB drives or no-admin environments.
+              </p>
+            </article>
+          </div>
+          <div class="meta-row">
+            <a id="repoTag" class="chip chip-link" href="#" target="_blank" rel="noreferrer">Repository: temasictfic/Atf-I-Memnu</a>
+            <a id="allReleasesLink" class="chip chip-link" href="#" target="_blank" rel="noreferrer">All releases</a>
+          </div>
+        </section>
+
+        <section class="panel release" id="releasePanel">
+          <div id="status" class="status">Loading latest release...</div>
+          <div id="releaseRoot" class="release-root" hidden>
+            <div class="release-head">
+              <div>
+                <p class="label">Latest version</p>
+                <h2 id="releaseTitle">-</h2>
+                <p class="sub" id="releaseDate">-</p>
+              </div>
+              <a id="releasePageLink" class="secondary-link" href="#" target="_blank" rel="noreferrer">View on GitHub</a>
+            </div>
+
+            <div id="assetList" class="asset-list"></div>
+            <p id="assetFilterInfo" class="asset-filter-info" hidden></p>
+
+            <div class="notes-wrap">
+              <p class="label">Release notes</p>
+              <pre id="releaseNotes" class="notes"></pre>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>

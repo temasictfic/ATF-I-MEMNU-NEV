@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+@theme {
+  --color-atfi-50: #fffbeb;
+  --color-atfi-100: #fef3c7;
+  --color-atfi-200: #fde68a;
+  --color-atfi-300: #fcd34d;
+  --color-atfi-400: #fbbf24;
+  --color-atfi-500: #f59e0b;
+  --color-atfi-600: #d97706;
+  --color-atfi-700: #b45309;
+  --color-atfi-800: #92400e;
+  --color-atfi-900: #78350f;
+
+  --color-verify-green: #22c55e;
+  --color-verify-yellow: #eab308;
+  --color-verify-red: #ef4444;
+
+  --font-sans: 'Segoe UI', 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+:root {
+  font-family: var(--font-sans);
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  height: 100vh;
+}
+
+#app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f5f5f4;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d6d3d1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a29e;
+}
+
+/*
+ * pdfjs-dist text layer — explicitly enable text selection. The parsing page
+ * root sets `user-select: none` so drag gestures on source rectangles don't
+ * accidentally highlight anything; we need to opt the text layer back in so
+ * highlight notes can be created from real text selection.
+ *
+ * IMPORTANT: do NOT use `.textLayer *` — that would force `user-select: text`
+ * on the `.endOfContent` sentinel div that pdfjs-dist uses to cap selection
+ * at the page boundary. Scoping to `.textLayer` itself and its text-bearing
+ * `span`/`br` children preserves endOfContent's `user-select: none`, which
+ * is what stops a drag past the text from selecting the whole page.
+ */
+.textLayer {
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  user-select: text !important;
+}
+.textLayer span,
+.textLayer br {
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  user-select: text !important;
+}
