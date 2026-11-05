@@ -27,9 +27,14 @@ mkdirSync(out, { recursive: true })
 const failures = []
 const check = (ok, message) => { if (!ok) failures.push(message) }
 
-const browser = await chromium.launch()
+// Full Chromium (not the headless shell), so browser-initiated requests
+// such as /favicon.ico happen just like in WebView2.
+const browser = await chromium.launch({ channel: 'chromium' })
 const page = await browser.newPage({ viewport: { width: 1400, height: 860 } })
 page.on('pageerror', (e) => failures.push(`page error: ${e.message}`))
+page.on('console', (m) => {
+  if (m.type() === 'error') failures.push(`console error at ${m.location().url}: ${m.text()}`)
+})
 page.on('response', (r) => { if (r.status() >= 400) failures.push(`HTTP ${r.status()} ${r.url()}`) })
 
 await page.goto(url)

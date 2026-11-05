@@ -3,6 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The UI is served over HTTP now (Electron used file://), so the browser
+         asks for a favicon; without one every launch logs a 404. -->
+    <link rel="icon" href="./favicon.ico" />
     <title>ARDEB · Kaynakça Kontrol Sistemi</title>
   </head>
   <body class="bg-white text-stone-800 antialiased">
