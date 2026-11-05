@@ -57,8 +57,13 @@ export const api = {
     request<{ success: boolean }>('POST', `/api/parse/unapprove/${pdfId}`),
 
   // NER field extraction — the only remaining backend-side PDF-ish work.
-  extractFields: (text: string) =>
-    request<import('./types').ParsedSource>('POST', '/api/parse/extract-fields', { text }),
+  // alreadyClean: the text is the UI's displayed/edited (already cleaned)
+  // text, so the backend must not strip its leading numbering again.
+  extractFields: (text: string, alreadyClean = false) =>
+    request<import('./types').ParsedSource>('POST', '/api/parse/extract-fields', {
+      text,
+      already_clean: alreadyClean,
+    }),
 
   // Verification
   verifyBatch: (pdfIds: string[], texts: Record<string, string>, excludedIds: string[]) =>

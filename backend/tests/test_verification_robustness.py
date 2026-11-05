@@ -52,7 +52,7 @@ def events(monkeypatch):
 def test_internal_error_restores_previous_result(monkeypatch, events) -> None:
     pdf = "b" * 16
 
-    async def boom(text):
+    async def boom(text, **kwargs):
         raise ValueError("unexpected NER output")
 
     monkeypatch.setattr(orch, "extract_source_fields", boom)
@@ -70,7 +70,7 @@ def test_internal_error_restores_previous_result(monkeypatch, events) -> None:
 def test_internal_error_on_first_run_leaves_source_unverified(monkeypatch, events) -> None:
     pdf = "c" * 16
 
-    async def boom(text):
+    async def boom(text, **kwargs):
         raise RuntimeError("bug")
 
     monkeypatch.setattr(orch, "extract_source_fields", boom)
@@ -113,7 +113,7 @@ def test_cancel_all_stops_batch_before_next_pdf(monkeypatch) -> None:
 def _patch_slow_verifier(monkeypatch, started: list[str]):
     """Replace the network part with a slow fake that settles every source as high."""
 
-    async def fake_verify_source(pdf_id, source, results_store, index=0, job_id=""):
+    async def fake_verify_source(pdf_id, source, results_store, index=0, job_id="", **kwargs):
         key = (pdf_id, source.id)
         orch._active_source_jobs[key] = job_id
         results_store[pdf_id][source.id] = VerificationResult(source_id=source.id, status="in_progress")
@@ -210,7 +210,7 @@ def test_verifier_acquires_pacing_slot(monkeypatch, module, host) -> None:
 def test_real_verify_source_drops_result_of_retired_source(monkeypatch, events) -> None:
     pdf = "f" * 16
 
-    async def slow_parse(text):
+    async def slow_parse(text, **kwargs):
         await asyncio.sleep(1)
         raise AssertionError("should have been cancelled")
 
@@ -228,3 +228,37 @@ def test_real_verify_source_drops_result_of_retired_source(monkeypatch, events) 
     # Neither finalized nor restored to the previous (medium) result.
     assert "s1" not in store[pdf]
     assert not orch._retired_sources
+
+
+# --- item 6: source text is cleaned exactly once --------------------------------
+
+
+def test_ui_text_is_not_cleaned_again(monkeypatch, events) -> None:
+    """'[12] 3-D printing' is shown as '3-D printing'; it must be verified as that."""
+    seen: list[str] = []
+
+    async def capture_parse(text, *, already_clean=False):
+        seen.append(text if already_clean else f"RAW:{text}")
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(orch, "extract_source_fields", capture_parse)
+    pdf = "g" * 16
+    store: dict[str, dict[str, VerificationResult]] = {}
+    sources = [_source("s1", pdf), _source("s2", pdf)]
+    sources[1] = sources[1].model_copy(update={"text": "[7] 3-D printing of tissue. Nature (2019)."})
+    custom = {"s1": "3-D printing in medicine. Lancet (2020)."}  # displayed/edited in the UI
+    asyncio.run(orch.verify_pdf_sources_filtered(pdf, sources, store, custom, set(), job_id="j"))
+    assert sorted(seen) == [
+        "3-D printing in medicine. Lancet (2020).",  # UI text used as-is
+        "3-D printing of tissue. Nature (2019).",  # raw cache text cleaned once
+    ]
+
+
+def test_extract_fields_cleans_once() -> None:
+    from services.source_extractor import _extract_source_fields_regex
+    from utils.text_cleaning import strip_source_noise
+
+    assert strip_source_noise(strip_source_noise("[12] 3-D printing")) == "D printing"  # why it matters
+    clean = strip_source_noise("[12] 3-D printing in medicine. Lancet (2020).")
+    parsed = _extract_source_fields_regex(clean, already_clean=True)
+    assert parsed.raw_text.startswith("3-D")

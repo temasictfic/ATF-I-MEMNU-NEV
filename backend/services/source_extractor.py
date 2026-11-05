@@ -31,7 +31,7 @@ _LEADING_INLINE_CITATION_RE = re.compile(
 )
 
 
-async def extract_source_fields(raw_text: str) -> ParsedSource:
+async def extract_source_fields(raw_text: str, *, already_clean: bool = False) -> ParsedSource:
     """Parse raw source text into structured fields.
 
     Tries NER extraction first, falls back to regex if NER is
@@ -41,22 +41,27 @@ async def extract_source_fields(raw_text: str) -> ParsedSource:
 
     # Strip leading source numbering ("1-", "1.", "[1]", "1)") before
     # NER sees the text — otherwise the numeric prefix leaks into author
-    # entity spans via raw_text offset reconstruction.
-    cleaned_text = strip_source_noise(raw_text)
+    # entity spans via raw_text offset reconstruction. Exactly once:
+    # `strip_source_noise` is not idempotent ("[12] 3-D printing" ->
+    # "3-D printing" -> "D printing"), so callers that already cleaned the
+    # text (the verification pipeline, the UI's displayed text) pass
+    # already_clean=True.
+    cleaned_text = raw_text if already_clean else strip_source_noise(raw_text)
 
     ner_result = await extract_fields_ner(cleaned_text)
     if ner_result is not None and ner_result.parse_confidence >= LOW_PARSE_CONFIDENCE_THRESHOLD:
         return ner_result
 
-    return _extract_source_fields_regex(cleaned_text)
+    return _extract_source_fields_regex(cleaned_text, already_clean=True)
 
 
-def _extract_source_fields_regex(raw_text: str) -> ParsedSource:
+def _extract_source_fields_regex(raw_text: str, *, already_clean: bool = False) -> ParsedSource:
     """Parse raw source text into structured fields using rule-based, format-aware extraction."""
     result = ParsedSource(raw_text=raw_text)
 
-    # Strip leading numbering and access-date noise before parsing fields.
-    text = strip_source_noise(raw_text)
+    # Strip leading numbering and access-date noise before parsing fields
+    # (once; see extract_source_fields).
+    text = raw_text if already_clean else strip_source_noise(raw_text)
 
     # Strip a leading inline parenthetical citation that some refs
     # duplicate before the real author list, e.g.

@@ -50,6 +50,9 @@ class UpdateSourcesRequest(BaseModel):
 
 class ExtractFieldsRequest(BaseModel):
     text: str
+    # True when the text is already cleaned (the UI's displayed/edited text):
+    # prefix stripping is not idempotent and must not run twice.
+    already_clean: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -138,5 +141,5 @@ async def extract_fields(request: ExtractFieldsRequest):
     """Extract structured citation fields from raw source text."""
     from services.source_extractor import extract_source_fields
 
-    parsed = await extract_source_fields(request.text)
+    parsed = await extract_source_fields(request.text, already_clean=request.already_clean)
     return parsed.model_dump()

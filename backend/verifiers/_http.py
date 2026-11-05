@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 from scrapers.rate_limiter import rate_limiter
-from services.search_settings import get_client_timeout, get_polite_pool_email
+from services.search_settings import get_polite_pool_email
 
 T = TypeVar("T")
 
@@ -276,6 +276,9 @@ async def acquire_or_rate_limited(host: str, max_wait: float) -> None:
         raise RateLimitedError(host, retry_after=max_wait, status=429) from None
 
 
+_SESSION_BACKSTOP_TIMEOUT = aiohttp.ClientTimeout(total=300)
+
+
 def get_session() -> aiohttp.ClientSession:
     """Return the process-wide verifier session, creating it on first use."""
     global _session
@@ -285,8 +288,14 @@ def get_session() -> aiohttp.ClientSession:
         # system proxy settings (urllib.request.getproxies reads the
         # registry). Without it the verifiers could not reach any database
         # from networks that only allow traffic through a proxy.
+        #
+        # The session-level timeout is only a backstop (the Settings maximum).
+        # Each database call is bounded by the orchestrator's per-call
+        # asyncio.wait_for, which reads the *current* search_timeout. The old
+        # session timeout was frozen at the value when the session was
+        # created, so raising the setting had no effect until a restart.
         _session = aiohttp.ClientSession(
-            timeout=get_client_timeout(), connector=connector, trust_env=True
+            timeout=_SESSION_BACKSTOP_TIMEOUT, connector=connector, trust_env=True
         )
     return _session
 

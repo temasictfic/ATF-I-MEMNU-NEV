@@ -82,6 +82,34 @@ let _savedTimer: ReturnType<typeof setTimeout> | null = null
 // invariant: the backend only ever overwrites fields the renderer
 // deliberately touched.
 const _pendingFields = new Set<keyof AppSettings>()
+// Database operations are applied optimistically and confirmed by the
+// server. Only the newest operation's response may replace the list; an
+// older one resolving late used to roll the list back (rapid toggles or
+// reorders appeared to "undo" themselves).
+let _dbOpSeq = 0
+let _dbOpsInFlight = 0
+
+// Merge a server echo into the local settings without clobbering what the
+// user changed after the request was sent. The old code replaced the whole
+// object, so characters typed into a field (e.g. an API key) while a save was
+// in flight were lost, and the next save then persisted the reverted value.
+function _mergeServerSettings(server: AppSettings): AppSettings {
+  const local = useSettingsStore.getState().settings
+  const merged: AppSettings = { ...server }
+  for (const field of _pendingFields) {
+    if (field === 'api_keys') {
+      // Per key: keep the user's in-progress values, but take keys only the
+      // server manages (the OpenAIRE token is set via connect/disconnect,
+      // never typed into api_keys locally).
+      const { openaire: _localOpenaire, ...localKeys } = local.api_keys ?? {}
+      merged.api_keys = { ...(server.api_keys ?? {}), ...localKeys }
+      continue
+    }
+    ;(merged as unknown as Record<string, unknown>)[field] = local[field]
+  }
+  if (_dbOpsInFlight > 0) merged.databases = local.databases
+  return merged
+}
 function _debouncedSave(
   get: () => SettingsState,
   field: keyof AppSettings,
@@ -110,7 +138,10 @@ function _debouncedSave(
     }
     try {
       const s = await api.updateSettings(patch)
-      useSettingsStore.setState({ settings: s, saveStatus: 'saved' })
+      useSettingsStore.setState({
+        settings: _mergeServerSettings(s),
+        saveStatus: _pendingFields.size > 0 ? 'saving' : 'saved',
+      })
       _savedTimer = setTimeout(() => useSettingsStore.setState({ saveStatus: 'idle' }), SETTINGS_SAVED_FLASH_MS)
     } catch (e) {
       console.error('Failed to auto-save settings:', e)
@@ -129,14 +160,21 @@ function _debouncedSave(
 async function _runDatabaseOp(call: () => Promise<AppSettings>) {
   if (_savedTimer) clearTimeout(_savedTimer)
   useSettingsStore.setState({ saveStatus: 'saving' })
+  const seq = ++_dbOpSeq
+  _dbOpsInFlight++
   try {
     const s = await call()
-    useSettingsStore.setState({ settings: s, saveStatus: 'saved' })
+    _dbOpsInFlight--
+    // A newer operation is (or was) in flight: its optimistic state and its
+    // own response are authoritative, so drop this stale echo.
+    if (seq !== _dbOpSeq) return
+    useSettingsStore.setState({ settings: _mergeServerSettings(s), saveStatus: 'saved' })
     _savedTimer = setTimeout(
       () => useSettingsStore.setState({ saveStatus: 'idle' }),
       SETTINGS_SAVED_FLASH_MS,
     )
   } catch (e) {
+    _dbOpsInFlight--
     console.error('Failed database settings op:', e)
     useSettingsStore.setState({ saveStatus: 'error' })
     _savedTimer = setTimeout(
@@ -311,7 +349,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     try {
       const res = await api.validateOpenaireToken(refreshToken)
       if (res.valid && res.settings) {
-        set({ settings: res.settings })
+        set({ settings: _mergeServerSettings(res.settings) })
         return { ok: true }
       }
       return { ok: false, error: res.error ?? 'Validation failed.' }
@@ -326,7 +364,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   disconnectOpenaire: async () => {
     try {
       const updated = await api.disconnectOpenaire()
-      set({ settings: updated })
+      set({ settings: _mergeServerSettings(updated) })
     } catch (err) {
       console.error('Failed to disconnect OpenAIRE:', err)
     }

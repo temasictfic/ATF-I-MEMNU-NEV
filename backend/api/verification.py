@@ -142,9 +142,10 @@ async def reverify_source(pdf_id: str, source_id: str, request: VerifySourceRequ
     # Use the edited text if one was provided. A blank string means "no
     # edit" (the renderer used to send "" for untouched cards, which made the
     # backend verify an empty query instead of the stored source text).
-    text = request.text if request.text and request.text.strip() else source.text
+    edited = bool(request.text and request.text.strip())
+    text = request.text.strip() if edited else source.text
     task = spawn(
-        _reverify_source_job(job_id, pdf_id, source_id, text),
+        _reverify_source_job(job_id, pdf_id, source_id, text, text_is_clean=edited),
         name=f"verify-source-{source_id}",
     )
     _register_task(source_id, task)
@@ -156,13 +157,14 @@ async def _reverify_source_job(
     pdf_id: str,
     source_id: str,
     text: str,
+    text_is_clean: bool = False,
 ) -> None:
     """Run a single-source job with the same terminal lifecycle as PDF jobs."""
     from services.verification_orchestrator import verify_single_source
 
     try:
         await verify_single_source(
-            pdf_id, source_id, text, verify_results, job_id
+            pdf_id, source_id, text, verify_results, job_id, text_is_clean=text_is_clean
         )
         verify_jobs[job_id]["status"] = "done"
     except asyncio.CancelledError:
@@ -438,6 +440,9 @@ async def score_scholar(request: ScoreScholarRequest):
     # thinks the leading capitalized words are authors. Prefer the renderer-
     # supplied full citation (which honours user edits in the textbox); fall
     # back to the on-disk sources cache when an older renderer doesn't send it.
+    # The renderer sends the text shown in the card (already cleaned); the
+    # cache fallback is raw and gets cleaned once by extract_source_fields.
+    text_is_clean = bool(request.full_source_text)
     if request.full_source_text:
         full_source_text = request.full_source_text
     else:
@@ -445,7 +450,7 @@ async def score_scholar(request: ScoreScholarRequest):
         source_rect = next((s for s in sources if s.id == request.source_id), None)
         full_source_text = source_rect.text if source_rect else request.source_text
 
-    parsed = await extract_source_fields(full_source_text)
+    parsed = await extract_source_fields(full_source_text, already_clean=text_is_clean)
 
     scholar_matches: list[MatchResult] = []
     search_url = build_search_url("Google Scholar", request.source_text[:200])

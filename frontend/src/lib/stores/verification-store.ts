@@ -438,8 +438,12 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
     try {
       const { verifyTexts, enabledSources, sourceOrder } = get()
       const texts: Record<string, string> = {}
+      // verifyTexts are already cleaned (sanitized once when initialised
+      // from the source, or edited by the user). Cleaning them again here ate
+      // text: "[12] 3-D printing" is shown as "3-D printing" and was sent as
+      // "D printing". The backend uses these texts as-is.
       for (const [sourceId, text] of Object.entries(verifyTexts)) {
-        texts[sourceId] = sanitizeSourceText(text)
+        texts[sourceId] = text.trim()
       }
 
       // Build the excluded set via the same Muaf rules the renderer uses.
@@ -616,8 +620,12 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
     try {
       const { verifyTexts, enabledSources, sourceOrder, resultsByPdf } = get()
       const texts: Record<string, string> = {}
+      // verifyTexts are already cleaned (sanitized once when initialised
+      // from the source, or edited by the user). Cleaning them again here ate
+      // text: "[12] 3-D printing" is shown as "3-D printing" and was sent as
+      // "D printing". The backend uses these texts as-is.
       for (const [sourceId, text] of Object.entries(verifyTexts)) {
-        texts[sourceId] = sanitizeSourceText(text)
+        texts[sourceId] = text.trim()
       }
 
       const orderedIds = sourceOrder[pdfId] ?? []
@@ -850,7 +858,7 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
       // Only send text the user actually edited. `undefined` used to become
       // "" here, and the backend then verified an empty string instead of
       // the stored source text.
-      const edited = text !== undefined ? sanitizeSourceText(text) : ''
+      const edited = text !== undefined ? text.trim() : ''
       const response = await api.verifySource(pdfId, sourceId, edited.trim() ? edited : undefined)
 
       // Replace sentinel with real job_id, but only if our sentinel is still

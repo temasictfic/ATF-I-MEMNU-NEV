@@ -1,6 +1,5 @@
 """Helpers for reading effective search runtime settings."""
 
-import aiohttp
 from config import settings as app_config
 
 from services.settings_store import get_current_settings
@@ -47,8 +46,3 @@ def get_polite_pool_email() -> str | None:
     email = (s.polite_pool_email or "").strip()
     return email or None
 
-
-def get_client_timeout(multiplier: float = 1.0) -> aiohttp.ClientTimeout:
-    """Build an aiohttp timeout using the effective search timeout."""
-    total = round(get_search_timeout_seconds() * max(multiplier, 0.1))
-    return aiohttp.ClientTimeout(total=max(5, min(total, 300)))

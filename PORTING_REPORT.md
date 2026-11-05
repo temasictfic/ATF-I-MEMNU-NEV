@@ -153,9 +153,13 @@ These change behaviour or need a bigger refactor, so they were left alone.
 4. **No request pacing** for Europe PMC, TRDizin and Open Library, even though rates are configured for two of their hosts.
    - ✅ **Fixed:** Europe PMC (0.5 s) and Open Library (0.6 s) are paced. TRDizin is left unpaced on purpose.
 5. **`search_timeout` changes need a restart.** The aiohttp session timeout is frozen at creation.
+   - ✅ **Fixed:** the session timeout is a fixed 300 s backstop. The per-call timeout, which reads the live setting, does the limiting.
 6. **`strip_source_noise` is not idempotent** but runs 3–4 times per source. For example, `"[12] 3-D printing"` loses `3-` on the second pass.
+   - ✅ **Fixed:** raw cached text is cleaned exactly once, at the start of verification. Text from the UI (already cleaned for display, or edited) is used as-is, including in Scholar scoring and `extract-fields`. The frontend no longer re-cleans before sending, and the search helper is idempotent. The bug was user-visible: the card showed `3-D printing` but `D printing` was verified.
 7. **"~X" (verify non-high) Scholar scan.** An old comment says it should run *regardless* of the auto-Scholar setting, but the code checks the setting. It now schedules once and respects the setting; the comment was updated. Decide whether it should be forced.
+   - ✔️ **Decided:** keep respecting the setting (no change).
 8. **Settings store overwrites in-flight edits.** Autosave and DB-op responses replace the whole `settings` object, so characters typed while a request is in flight can be lost. Concurrent DB toggles can also resolve out of order.
+   - ✅ **Fixed:** server echoes are merged instead of replacing settings. Fields edited after the request was sent are kept (API keys per key, except the server-managed OpenAIRE token), and only the newest database operation's response is applied.
 9. **PDF annotation coordinates** ignore a non-zero MediaBox origin and `/Rotate` (`frontend/src/lib/pdf/annotation-writer.ts`). **Report writer:** `wrapText` never hard-breaks long URLs or DOIs, so they overflow.
 10. **Source detection:** the loose header regex matches substrings ("Resources", "Kaynakları"), so an early body-text line can win over the real KAYNAKLAR header.
 11. **Polling** stops permanently after 3 errors and isn't resumed after a WebSocket reconnect, so cards can stay `in_progress`. Polling runs every 5 s even while the WebSocket is healthy.

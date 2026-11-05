@@ -4,7 +4,7 @@ import { scholarScanner } from '../services/scholar-scanner'
 import { useVerificationStore } from './verification-store'
 import { useSourcesStore } from './sources-store'
 import { useSettingsStore } from './settings-store'
-import { sanitizeSourceTextForSearch } from '../utils/source-text'
+import { sanitizeSourceText, sanitizeSourceTextForSearch } from '../utils/source-text'
 import { computeExclusion } from '../verification/exclusion'
 import { api } from '../api/rest-client'
 import i18n from '../i18n'
@@ -131,10 +131,11 @@ export const useScholarScanStore = create<ScholarScanState>((set, get) => {
 
     return Promise.all(
       selected.map(async (s) => {
-        const rawText = verStore.verifyTexts[s.id] ?? s.text
+        // The text shown in the card: already cleaned (sanitized once).
+        const rawText = verStore.verifyTexts[s.id] ?? sanitizeSourceText(s.text)
         let searchText = ''
         try {
-          const parsed = await api.extractFields(rawText)
+          const parsed = await api.extractFields(rawText, true)
           searchText = parsed?.title?.trim() ?? ''
         } catch (err) {
           console.warn(`[Scholar] extractFields failed for ${s.id}:`, err)

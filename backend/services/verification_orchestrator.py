@@ -230,8 +230,12 @@ async def verify_pdf_sources(
     sources: list[SourceRectangle],
     results_store: dict[str, dict[str, VerificationResult]],
     job_id: str = "",
+    clean_ids: set[str] | None = None,
 ):
     """Verify all sources for a single PDF.
+
+    ``clean_ids``: sources whose ``text`` is already cleaned (texts edited or
+    displayed in the UI); the rest are raw cache texts, cleaned once here.
 
     ``job_id`` flows through to every WS broadcast so the renderer can drop
     stale events from a superseded run (cancel-then-reverify race).
@@ -245,7 +249,10 @@ async def verify_pdf_sources(
 
     async def verify_with_limit(source: SourceRectangle, index: int):
         async with source_semaphore:
-            await _verify_source(pdf_id, source, results_store, index, job_id)
+            await _verify_source(
+                pdf_id, source, results_store, index, job_id,
+                text_is_clean=source.id in (clean_ids or ()),
+            )
 
     # Create tasks and register for cancellation, under the PDF *and* under
     # each source id, so the per-source Stop button (cancel/source) also
@@ -301,6 +308,7 @@ async def verify_single_source(
     text: str,
     results_store: dict[str, dict[str, VerificationResult]],
     job_id: str = "",
+    text_is_clean: bool = False,
 ):
     """Verify a single source (used for individual verification)."""
     if pdf_id not in results_store:
@@ -317,7 +325,7 @@ async def verify_single_source(
     )
 
     try:
-        await _verify_source(pdf_id, temp_source, results_store, 0, job_id)
+        await _verify_source(pdf_id, temp_source, results_store, 0, job_id, text_is_clean=text_is_clean)
     except asyncio.CancelledError:
         pass
     finally:
@@ -352,6 +360,7 @@ async def _verify_source(
     results_store: dict[str, dict[str, VerificationResult]],
     source_index: int = 0,
     job_id: str = "",
+    text_is_clean: bool = False,
 ):
     """Verify a single source against all databases."""
     source_id = source.id
@@ -365,7 +374,9 @@ async def _verify_source(
         status="in_progress",
     )
 
-    source_text = strip_source_noise(source.text)
+    # The one place verification cleans a raw text (strip_source_noise is not
+    # idempotent, so it must run exactly once).
+    source_text = source.text if text_is_clean else strip_source_noise(source.text)
 
     await manager.broadcast("verify_started", {
         "pdf_id": pdf_id,
@@ -396,7 +407,7 @@ async def _verify_source(
         api_semaphore = asyncio.Semaphore(get_max_concurrent_apis())
 
         # Parse source text into structured fields
-        parsed = await extract_source_fields(source_text)
+        parsed = await extract_source_fields(source_text, already_clean=True)
 
         if parsed.doi:
             await manager.send_log("info", f"DOI found: {parsed.doi}", pdf_id=pdf_id, source_id=source_id)
@@ -841,15 +852,19 @@ async def verify_pdf_sources_filtered(
     """Verify sources with custom texts and exclusions."""
     filtered = [s for s in sources if s.id not in excluded_ids]
 
-    # Apply custom text overrides
+    # Apply custom text overrides. They are the texts shown (and possibly
+    # edited) in the UI, which are already cleaned, so they are used as-is.
     modified = []
+    clean_ids: set[str] = set()
     for s in filtered:
-        if s.id in custom_texts:
-            modified.append(s.model_copy(update={"text": strip_source_noise(custom_texts[s.id])}))
+        text = custom_texts.get(s.id)
+        if text and text.strip():
+            modified.append(s.model_copy(update={"text": text.strip()}))
+            clean_ids.add(s.id)
         else:
             modified.append(s)
 
-    await verify_pdf_sources(pdf_id, modified, results_store, job_id=job_id)
+    await verify_pdf_sources(pdf_id, modified, results_store, job_id=job_id, clean_ids=clean_ids)
 
 
 async def _finalize_result(

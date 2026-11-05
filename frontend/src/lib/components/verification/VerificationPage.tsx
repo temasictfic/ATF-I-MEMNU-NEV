@@ -1009,7 +1009,7 @@ export default function VerificationPage() {
     const reportSources = sortedSourcesForExport.map(s => {
       const r = pdfResults[s.id]
       const bm = r?.best_match
-      const refText = allVerifyTexts[s.id] ?? s.text ?? ''
+      const refText = allVerifyTexts[s.id] ?? sanitizeSourceText(s.text ?? '')
       // Prefer backend-provided URLs (built from NER-extracted title).
       // Fall back to local computation only when backend URLs aren't available.
       let scholarUrl = r?.scholar_url
@@ -1438,7 +1438,7 @@ export default function VerificationPage() {
 
   const selectedSearchText = useMemo(() => {
     if (!selectedSourceId) return ''
-    const text = verifyTexts[selectedSourceId] ?? currentSource?.text ?? ''
+    const text = verifyTexts[selectedSourceId] ?? sanitizeSourceText(currentSource?.text ?? '')
     return sanitizeSourceTextForSearch(text)
   }, [selectedSourceId, verifyTexts, currentSource])
 
@@ -1449,7 +1449,7 @@ export default function VerificationPage() {
 
   useEffect(() => {
     if (!selectedSourceId) return
-    const rawText = verifyTexts[selectedSourceId] ?? currentSource?.text ?? ''
+    const rawText = verifyTexts[selectedSourceId] ?? sanitizeSourceText(currentSource?.text ?? '')
     if (!rawText.trim()) return
     const key = `${selectedSourceId}::${rawText}`
     if (parsedTitles[key] !== undefined) return
@@ -1458,7 +1458,7 @@ export default function VerificationPage() {
     // one NER request per keystroke.
     const timer = setTimeout(async () => {
       try {
-        const parsed = await api.extractFields(rawText)
+        const parsed = await api.extractFields(rawText, true)
         if (cancelled) return
         setParsedTitles(prev => ({ ...prev, [key]: parsed?.title?.trim() ?? '' }))
       } catch {
@@ -1474,7 +1474,7 @@ export default function VerificationPage() {
 
   const selectedParsedTitle = useMemo(() => {
     if (!selectedSourceId) return ''
-    const rawText = verifyTexts[selectedSourceId] ?? currentSource?.text ?? ''
+    const rawText = verifyTexts[selectedSourceId] ?? sanitizeSourceText(currentSource?.text ?? '')
     const key = `${selectedSourceId}::${rawText}`
     return parsedTitles[key] ?? ''
   }, [selectedSourceId, verifyTexts, currentSource, parsedTitles])
