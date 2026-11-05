@@ -10,31 +10,29 @@ class WebSocketClient {
   private maxReconnectDelay = 30000
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private url = ''
-  private _connected = false
   // Set by disconnect() so the next onclose doesn't kick off a reconnect.
   // A subsequent connect() resets it. Without this, app teardown / explicit
   // disconnect attempts would race against the auto-reconnect timer.
   private intentionalClose = false
 
-  get connected(): boolean {
-    return this._connected
-  }
-
   connect(): void {
     if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) return
 
     this.intentionalClose = false
-    void this.connectInternal()
+    this.connectInternal()
   }
 
-  private async connectInternal(): Promise<void> {
+  // Synchronous now that the endpoint is injected at boot. The old version
+  // awaited the port lookup between the "already connecting?" check and
+  // `new WebSocket`, so a second connect() (or a disconnect()) during that
+  // await could create a duplicate or orphaned socket.
+  private connectInternal(): void {
     try {
-      this.url = await getBackendWsUrl()
+      this.url = getBackendWsUrl()
       this.ws = new WebSocket(this.url)
 
       this.ws.onopen = () => {
-        console.log('%c[WS] Connected to', 'color: #22c55e; font-weight: bold', this.url)
-        this._connected = true
+        console.log('%c[WS] Connected', 'color: #22c55e; font-weight: bold')
         this.reconnectDelay = 1000
         this.emit('ws:connected', {})
       }
@@ -50,7 +48,6 @@ class WebSocketClient {
 
       this.ws.onclose = (ev) => {
         console.log('%c[WS] Disconnected', 'color: #ef4444; font-weight: bold', `code=${ev.code}`)
-        this._connected = false
         this.emit('ws:disconnected', {})
         if (!this.intentionalClose) {
           this.scheduleReconnect()
@@ -59,7 +56,6 @@ class WebSocketClient {
 
       this.ws.onerror = (err) => {
         console.error('%c[WS] Error:', 'color: #ef4444; font-weight: bold', err)
-        this._connected = false
       }
     } catch (e) {
       console.error('[WS] Connection failed:', e)
@@ -107,13 +103,6 @@ class WebSocketClient {
     if (this.ws) {
       this.ws.close()
       this.ws = null
-    }
-    this._connected = false
-  }
-
-  send(data: Record<string, unknown>): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(data))
     }
   }
 }

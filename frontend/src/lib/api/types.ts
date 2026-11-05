@@ -56,8 +56,6 @@ export interface ParsedSource {
 // Verification types
 export type VerifyStatus = 'high' | 'medium' | 'low' | 'pending' | 'in_progress'
 
-export type ProblemTag = '!authors' | '!doi/arXiv' | '!year' | '!journal' | '!title'
-
 export type DecisionTag = 'valid' | 'citation' | 'fabricated'
 
 export type TagKey = 'authors' | 'year' | 'title' | 'journal' | 'doi/arXiv'
@@ -158,17 +156,6 @@ export interface WsEvent {
   data: Record<string, unknown>
 }
 
-export interface LogEntry {
-  id: string
-  timestamp: string
-  level: 'info' | 'success' | 'warning' | 'error'
-  message: string
-  pdf_id?: string
-  source_id?: string
-  database?: string
-  group_key?: string
-}
-
 // Verification progress tracking
 export type DbCheckStatus = 'checking' | 'high' | 'medium' | 'low' | 'no_match' | 'timeout' | 'error' | 'rate_limited' | 'unauthorized' | 'skipped'
 
@@ -182,19 +169,6 @@ export interface DbCheckEntry {
 export interface SourceVerifyProgress {
   currentDb: string | null
   checkedDbs: DbCheckEntry[]
-}
-
-// Parse response types
-export interface ParseResponse {
-  job_id: string
-}
-
-export interface ParseStatusResponse {
-  pdfs: PdfDocument[]
-}
-
-export interface VerifyResponse {
-  job_id: string
 }
 
 // Google Scholar scan types

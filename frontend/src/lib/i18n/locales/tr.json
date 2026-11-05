@@ -15,7 +15,6 @@
   "update": {
     "availableWithVersion": "v{{version}} kullanılabilir",
     "availableGeneric": "Yeni bir sürüm kullanılabilir.",
-    "downloading": "Güncelleme indiriliyor: {{percent}}%",
     "ready": "Güncelleme yüklenebilir",
     "failed": "Güncelleme başarısız",
     "download": "İndir",
@@ -129,10 +128,7 @@
       "fetchFailed": "Muaf listesi URL'den yüklenemedi.",
       "fetchFailedCached": "Yükleme başarısız - önbellek kullanılıyor.",
       "placeholder": "Google Sheets yayınlanmış TSV URL'si",
-      "editLabel": "Düzenleme Tablosu URL'si",
-      "editDesc": "Düzenlenebilir Google Sheets belgesi bağlantısı.",
       "editPlaceholder": "Google Sheets düzenleme URL'si",
-      "viewDataLink": "Yayınlanmış Listeyi Görüntüle",
       "editLink": "Tabloyu Düzenle",
       "change": "Değiştir",
       "modalTitle": "Muaf Listesi URL'leri",
@@ -141,7 +137,6 @@
       "apply": "Uygula",
       "cancel": "İptal",
       "default": "Varsayılan",
-      "defaultsRestored": "URL'ler varsayılana sıfırlandı",
       "update": "Güncelle",
       "updating": "Güncelleniyor…",
       "updated": "Güncellendi",
@@ -164,7 +159,6 @@
   "parsing": {
     "documents": "Belgeler",
     "import": "+ İçe aktar",
-    "importing": "İçe aktarılıyor…",
     "noPdfsImported": "Henüz PDF içe aktarılmadı",
     "emptyStateSub": "PDF'leri buraya sürükleyin veya İçe aktar'a tıklayın",
     "dropHint": "İçe aktarmak için PDF'leri bırakın",
@@ -215,7 +209,6 @@
     "highlightTool": "Vurgulama: oluşturmak için bir kutu sürükleyin",
     "calloutTool": "Açıklama: bir kutu çizmek için sürükleyin",
     "noteColor": "Not rengi",
-    "opacity": "Saydamlık",
     "calloutOpacity": "Açıklama arka plan saydamlığı",
     "calloutOpacityAria": "Açıklama saydamlığı",
     "text": "Metin",
@@ -276,7 +269,6 @@
     "googleSearch": "Google Arama",
     "openGoogleScholar": "Orta panelde Google Scholar'ı aç",
     "openGoogleSearch": "Orta panelde Google Arama'yı aç",
-    "bestMatch": "En Yüksek Eşleşme",
     "bestRibbon": "en iyi",
     "selectDbResult": "{{db}} sonucunu göster",
     "moreDetails": "Daha çok",
@@ -294,7 +286,6 @@
     "noMatchFound": "Eşleşme bulunamadı",
     "databaseResults": "Veritabanı Sonuçları",
     "urlStatus": "URL Durumu",
-    "openSource": "Aç",
     "scrollToCard": "Karta kaydır",
     "markAsHigh": "Yüksek olarak işaretle",
     "markAsMedium": "Orta olarak işaretle",
@@ -308,7 +299,6 @@
       "yearBefore": "2000 öncesi yayın"
     },
     "verifyNonHigh": "Yüksek harici doğrula",
-    "scholarScanNonHigh": "Bulunamayanlar için Google Scholar taraması",
     "scholarPreparing": "Hazırlanıyor…",
     "scholarScanLabel": "Google Scholar Taraması",
     "scholarVerified": "doğrulandı",
@@ -319,7 +309,6 @@
     "scholarResume": "Devam et",
     "scholarCancel": "İptal",
     "nfShort": "~X",
-    "gsShort": "GS",
     "dragToReorder": "Sıralamak için sürükle",
     "copyText": "Metni kopyala",
     "resetToOriginal": "Orijinal metne sıfırla",
@@ -346,7 +335,6 @@
     "verifyAll": "Tümünü Doğrula",
     "verifyAllMenu": "Tümünü Doğrula seçenekleri",
     "verifyAllModes": {
-      "all": "Tümünü doğrula",
       "nonHigh": "Tümünü Yüksek harici Doğrula"
     },
     "cutoff": {
@@ -355,7 +343,6 @@
       "dragHint": "Tümünü Doğrula'nın çalıştıracağı PDF sayısını ayarlamak için sürükleyin"
     },
     "verifyThisSource": "Bu kaynağı doğrula",
-    "titleSimilarity": "Başlık benzerliği {{percent}}%",
     "urlReachable": "Erişilebilir",
     "urlDead": "Ölü bağlantı",
     "stop": "Durdur",
@@ -364,7 +351,6 @@
     "enableAll": "Tümünü etkinleştir",
     "disableAll": "Tümünü devre dışı bırak",
     "enableNonMuaf": "Yalnızca muaf olmayan {{count}} kaynağı etkinleştir",
-    "enabledCount": "{{count}}/{{total}} etkin",
     "searchPlaceholder": "Kaynaklarda ara...",
     "searchPlaceholderPdf": "{{name}} içinde ara",
     "verificationComplete": "Doğrulama tamamlandı: {{name}}",
@@ -432,6 +418,16 @@
     "exportPdfTotal": "Toplam",
     "exportPdfMatchGroup": "Eşleşme",
     "exportPdfDecisionGroup": "Karar",
-    "exportPdfReviewNotice": "ARDEB Kaynakça Kontrol Sistemi'ndeki kaynaklara dair verilen Geçerli kararları kontrol edilmemelidir.\nKünye ve Uydurma kararları ise nihai kararlar olmayıp, ilgili kararlara sahip kaynaklar kontrol edilmelidir."
+    "exportPdfReviewNotice": "ARDEB Kaynakça Kontrol Sistemi'ndeki kaynaklara dair verilen Geçerli kararları kontrol edilmemelidir.\nKünye ve Uydurma kararları ise nihai kararlar olmayıp, ilgili kararlara sahip kaynaklar kontrol edilmelidir.",
+    "exportPdfDone": "Rapor kaydedildi: {{name}}",
+    "exportFailed": "Dışa aktarma başarısız: {{error}}",
+    "exportBatchFailed": "{{count}} PDF için dışa aktarma başarısız oldu."
+  },
+  "model": {
+    "downloading": "Kaynak modeli %{{percent}}",
+    "verifying": "Kaynak modeli doğrulanıyor…",
+    "failed": "Model indirilemedi",
+    "retry": "Tekrar dene",
+    "tooltip": "Kaynakça ayrıştırma modelinin tek seferlik indirmesi (yaklaşık 125 MB). İndirme bitene kadar alan çıkarımı düzenli ifade yedeğini kullanır."
   }
 }

@@ -38,8 +38,17 @@ const CALLOUT_INNER_PAD_PX = 4 * SCALE
 const MEASURE_FONT_FAMILY = '__atfi_liberation_measure__'
 // Once-per-session font load. Kicked off at module import so the first
 // auto-annotate click (after the app has been open for a moment) doesn't
-// need to wait.
-const measureFontReady = loadMeasureFonts()
+// need to wait. A failure is logged (it used to be an unhandled rejection)
+// and retried on the next use instead of being cached for the session.
+let measureFontReady: Promise<void> | null = null
+function ensureMeasureFonts(): Promise<void> {
+  measureFontReady ??= loadMeasureFonts().catch((err) => {
+    measureFontReady = null
+    console.warn('[auto-notes] measurement font load failed:', err)
+  })
+  return measureFontReady
+}
+void ensureMeasureFonts()
 
 interface GenerateArgs {
   pdfId: string
@@ -75,7 +84,7 @@ export async function generateAutoNotesForPdf({
   // before we size any callouts. If loading fails we fall back to the
   // generic sans-serif metric (with a small safety margin baked in
   // below); otherwise widths match the exporter exactly.
-  await measureFontReady.catch(() => undefined)
+  await ensureMeasureFonts()
 
   removeAutoNotesForPdfByDecisionTag(pdfId, decisionTag)
 

@@ -84,17 +84,6 @@ const CONTINUATION_PATTERNS: RegExp[] = [
   /^[A-Z][\w&'\-\s.]*,\s+\d+(?:\(\d+\))?\s*:\s*\d/,
 ]
 
-const CITATION_SIGNAL_PATTERNS: RegExp[] = [
-  /(?:19|20)\d{2}/, // year 1900-2099
-  /\bet\s+al\b/i,
-  /\b10\.\d{4,9}\//, // DOI prefix
-  /https?:\/\//,
-  /"[^"]{10,}"/,
-  /\u201C[^\u201D]{10,}\u201D/,
-  /\bpp\.\s*\d/,
-  /\bvol\.\s*\d/i,
-]
-
 // Patterns that mark the previous block as still mid-citation, so the next
 // line should NOT be treated as a new reference start. Beyond the obvious
 // trailing separators (`,`, `;`, `&`, `ve`, `and`, `eds.`) we also recognise:
@@ -138,10 +127,6 @@ function isInstructionText(text: string): boolean {
 
 function hasRefNumber(text: string): boolean {
   return testAny(REF_NUMBER_PATTERNS, text)
-}
-
-function looksLikeCitation(text: string): boolean {
-  return testAny(CITATION_SIGNAL_PATTERNS, text)
 }
 
 function startsWithAuthorPattern(text: string): boolean {

@@ -23,9 +23,11 @@ import {
   BROWSER_ZOOM_STEP,
   MAX_BROWSER_ZOOM,
   MIN_BROWSER_ZOOM,
+  PARSE_FIELD_DEBOUNCE_MS,
   VERIFY_TOAST_DURATION_MS,
 } from '../../constants/timings'
 import styles from './VerificationPage.module.css'
+import { hostAPI } from '../../host/bridge'
 
 function problemTagDescription(tag: string): string {
   switch (tag) {
@@ -217,8 +219,9 @@ export default function VerificationPage() {
   const pendingVerifyPdfIdsRef = useRef<Set<string>>(new Set())
   // PDFs started via single-PDF verify (not Verify All) — auto-run GS when done
   const autoGsPdfIdsRef = useRef<Set<string>>(new Set())
-  // PDFs for which GS scan must run unconditionally after verification (ignoring setting).
-  // Used by the "~X" (verify non-high) button.
+  // PDFs verified via the "~X" (verify non-high) button. Like the
+  // single-PDF path, their GS scan honours the auto-Scholar setting (an older
+  // comment said "unconditionally"; see PORTING_REPORT.md).
   const forceGsPdfIdsRef = useRef<Set<string>>(new Set())
   // Single-source reverify runs awaiting completion to trigger a per-source GS scan.
   // Maps sourceId -> pdfId.
@@ -236,6 +239,31 @@ export default function VerificationPage() {
   const verifyAllModeRef = useRef<'all' | 'nonHigh'>('all')
   const [verifyAllActive, setVerifyAllActive] = useState(false)
   const [exportingReport, setExportingReport] = useState(false)
+  // Delayed Scholar-scan starts (keyed by pdfId or sourceId). Tracked so a
+  // Stop pressed inside the 500 ms delay also cancels the pending scan,
+  // which previously still started.
+  const scholarStartTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const scheduleScholarStart = useCallback((key: string, start: () => void) => {
+    const timers = scholarStartTimersRef.current
+    const existing = timers.get(key)
+    if (existing) clearTimeout(existing)
+    timers.set(key, setTimeout(() => {
+      timers.delete(key)
+      start()
+    }, 500))
+  }, [])
+  const cancelScheduledScholarStart = useCallback((key?: string) => {
+    const timers = scholarStartTimersRef.current
+    if (key === undefined) {
+      timers.forEach(clearTimeout)
+      timers.clear()
+      return
+    }
+    const existing = timers.get(key)
+    if (existing) clearTimeout(existing)
+    timers.delete(key)
+  }, [])
+  useEffect(() => () => cancelScheduledScholarStart(), [cancelScheduledScholarStart])
 
   // Fire completion-time side effects (toast + auto Scholar scan) when a
   // pending verification run transitions to completed. We trigger off
@@ -253,25 +281,15 @@ export default function VerificationPage() {
 
       let willRunScholar = false
 
-      if (autoGsPdfIdsRef.current.has(pdfId)) {
-        autoGsPdfIdsRef.current.delete(pdfId)
+      // A PDF can be in both sets; schedule its scan once (it used to be
+      // scheduled twice). Both paths respect the auto-Scholar setting.
+      const wantsAuto = autoGsPdfIdsRef.current.delete(pdfId)
+      const wantsForce = forceGsPdfIdsRef.current.delete(pdfId)
+      if (wantsAuto || wantsForce) {
         const autoGs = useSettingsStore.getState().settings.auto_scholar_after_verify ?? true
         if (autoGs) {
           willRunScholar = true
-          setTimeout(() => {
-            useScholarScanStore.getState().startScanForPdf(pdfId)
-          }, 500)
-        }
-      }
-
-      if (forceGsPdfIdsRef.current.has(pdfId)) {
-        forceGsPdfIdsRef.current.delete(pdfId)
-        const autoGs = useSettingsStore.getState().settings.auto_scholar_after_verify ?? true
-        if (autoGs) {
-          willRunScholar = true
-          setTimeout(() => {
-            useScholarScanStore.getState().startScanForPdf(pdfId)
-          }, 500)
+          scheduleScholarStart(pdfId, () => useScholarScanStore.getState().startScanForPdf(pdfId))
         }
       }
 
@@ -773,6 +791,7 @@ export default function VerificationPage() {
       const cur = verifyAllCurrentRef.current
       verifyAllCurrentRef.current = null
       if (cur) {
+        cancelScheduledScholarStart(cur)
         autoGsPdfIdsRef.current.delete(cur)
         forceGsPdfIdsRef.current.delete(cur)
         deferredToastNamesRef.current.delete(cur)
@@ -781,6 +800,7 @@ export default function VerificationPage() {
       } else {
         // Clear all tracking refs so the completion effect doesn't
         // trigger Scholar scans for cancelled verifications.
+        cancelScheduledScholarStart()
         autoGsPdfIdsRef.current.clear()
         forceGsPdfIdsRef.current.clear()
         pendingVerifyPdfIdsRef.current.clear()
@@ -845,6 +865,7 @@ export default function VerificationPage() {
         verifyAllCurrentRef.current = null
         setVerifyAllActive(false)
       }
+      cancelScheduledScholarStart(pdfId)
       autoGsPdfIdsRef.current.delete(pdfId)
       forceGsPdfIdsRef.current.delete(pdfId)
       deferredToastNamesRef.current.delete(pdfId)
@@ -875,6 +896,7 @@ export default function VerificationPage() {
         verifyAllCurrentRef.current = null
         setVerifyAllActive(false)
       }
+      cancelScheduledScholarStart(pdfId)
       autoGsPdfIdsRef.current.delete(pdfId)
       forceGsPdfIdsRef.current.delete(pdfId)
       deferredToastNamesRef.current.delete(pdfId)
@@ -900,6 +922,7 @@ export default function VerificationPage() {
   async function handleReverifyOrCancelSource() {
     if (!effectivePdfId || !selectedSourceId) return
     if (currentResult?.status === 'in_progress') {
+      cancelScheduledScholarStart(selectedSourceId)
       pendingSingleSourceGsRef.current.delete(selectedSourceId)
       await useVerificationStore.getState().cancelSource(selectedSourceId)
     } else {
@@ -929,9 +952,7 @@ export default function VerificationPage() {
       pendingSingleSourceGsRef.current.delete(sourceId)
       const autoGs = useSettingsStore.getState().settings.auto_scholar_after_verify ?? true
       if (autoGs) {
-        setTimeout(() => {
-          useScholarScanStore.getState().startScanForSource(pdfId, sourceId)
-        }, 500)
+        scheduleScholarStart(sourceId, () => useScholarScanStore.getState().startScanForSource(pdfId, sourceId))
       }
     }
   }, [resultsByPdf])
@@ -1110,7 +1131,7 @@ export default function VerificationPage() {
       if (configuredDir) {
         target = buildDefaultSavePath(configuredDir, defaultName)
       } else {
-        target = await window.electronAPI.showSaveAs({
+        target = await hostAPI.showSaveAs({
           title: t('verification.exportPdf'),
           defaultPath: defaultName,
           filters: [{ name: 'PDF Files', extensions: ['pdf'] }],
@@ -1124,13 +1145,13 @@ export default function VerificationPage() {
         return
       }
 
-      await window.electronAPI.writePdfFile(target, built.bytes)
-      setVerifyToast(t('verification.exportPdf'))
+      await hostAPI.writePdfFile(target, built.bytes)
+      setVerifyToast(t('verification.exportPdfDone', { name: target.split(/[\\/]/).pop() ?? target }))
       if (verifyToastTimerRef.current) clearTimeout(verifyToastTimerRef.current)
       verifyToastTimerRef.current = setTimeout(() => setVerifyToast(null), VERIFY_TOAST_DURATION_MS)
     } catch (err) {
       console.error('[VerificationPage] report PDF export failed:', err)
-      window.alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+      window.alert(t('verification.exportFailed', { error: err instanceof Error ? err.message : String(err) }))
     } finally {
       setExportingReport(false)
     }
@@ -1148,7 +1169,7 @@ export default function VerificationPage() {
     }
 
     const configuredDir = useSettingsStore.getState().settings.exported_pdf_dir?.trim()
-    const dir = configuredDir || (await window.electronAPI.selectDirectory())
+    const dir = configuredDir || (await hostAPI.selectDirectory())
     if (!dir) return
 
     setExportingReport(true)
@@ -1160,7 +1181,7 @@ export default function VerificationPage() {
           const built = await buildVerificationReportForPdf(pdf.id)
           if (!built) continue
           const filename = `${built.pdfName.replace(/\.[^.]+$/, '')}-verification.pdf`
-          await window.electronAPI.writePdfFile(buildDefaultSavePath(dir, filename), built.bytes)
+          await hostAPI.writePdfFile(buildDefaultSavePath(dir, filename), built.bytes)
           exported++
         } catch (e) {
           console.error('[VerificationPage] batch export failed for', pdf.name, e)
@@ -1173,7 +1194,7 @@ export default function VerificationPage() {
       if (verifyToastTimerRef.current) clearTimeout(verifyToastTimerRef.current)
       verifyToastTimerRef.current = setTimeout(() => setVerifyToast(null), VERIFY_TOAST_DURATION_MS)
       if (failed > 0 && exported === 0) {
-        window.alert(`Export failed for ${failed} PDF${failed === 1 ? '' : 's'}.`)
+        window.alert(t('verification.exportBatchFailed', { count: failed }))
       }
     } finally {
       setExportingReport(false)
@@ -1181,7 +1202,7 @@ export default function VerificationPage() {
   }
 
   async function openExternal(url: string) {
-    try { await (window as any).electronAPI.openExternal(url) }
+    try { await hostAPI.openExternal(url) }
     catch { window.open(url, '_blank') }
   }
 
@@ -1239,20 +1260,10 @@ export default function VerificationPage() {
   const findBarOpenRef = useRef(false)
   useEffect(() => { findBarOpenRef.current = findBarOpen }, [findBarOpen])
 
-  // Plain-Chrome UA so Cloudflare/WAFs (e.g. IEEE Xplore) don't 418 our
-  // scholar-panel webviews for advertising "Electron/..." in the UA. Pulled
-  // from main so the Chrome version stays in sync with the bundled Chromium —
-  // a stale literal here desyncs from sec-ch-ua and trips bot detectors.
-  const [scholarPanelUserAgent, setScholarPanelUserAgent] = useState<string>('')
-  useEffect(() => {
-    window.electronAPI.getScholarUserAgent().then(setScholarPanelUserAgent).catch(() => {})
-  }, [])
-
   // --- Scholar scan ---
   const scholarStatus = useScholarScanStore(s => s.status)
   const scholarCurrentIndex = useScholarScanStore(s => s.currentIndex)
   const scholarTotal = useScholarScanStore(s => s.totalInQueue)
-  const scholarFoundCount = useScholarScanStore(s => s.foundCount)
   const scholarCaptchaUrl = useScholarScanStore(s => s.captchaUrl)
   const scholarQueue = useScholarScanStore(s => s.queue)
   const scholarLastDoneSourceId = useScholarScanStore(s => s.lastDoneSourceId)
@@ -1385,15 +1396,24 @@ export default function VerificationPage() {
       }
     }
 
+    // Timers are tracked and cleared on cleanup; they used to outlive the
+    // effect and probe a torn-down webview.
+    const timers = new Set<ReturnType<typeof setTimeout>>()
     const onPageLoaded = (): void => {
       // Wait for page to fully render before checking
-      setTimeout(checkCaptchaSolved, 2000)
+      const timer = setTimeout(() => {
+        timers.delete(timer)
+        void checkCaptchaSolved()
+      }, 2000)
+      timers.add(timer)
     }
 
     view.addEventListener('did-navigate', onPageLoaded)
     view.addEventListener('did-navigate-in-page', onPageLoaded)
     view.addEventListener('did-stop-loading', onPageLoaded)
     return () => {
+      timers.forEach(clearTimeout)
+      timers.clear()
       try {
         view.removeEventListener('did-navigate', onPageLoaded)
         view.removeEventListener('did-navigate-in-page', onPageLoaded)
@@ -1420,7 +1440,9 @@ export default function VerificationPage() {
     const key = `${selectedSourceId}::${rawText}`
     if (parsedTitles[key] !== undefined) return
     let cancelled = false
-    ;(async () => {
+    // Debounced like ParsingPage: typing in the selected card used to fire
+    // one NER request per keystroke.
+    const timer = setTimeout(async () => {
       try {
         const parsed = await api.extractFields(rawText)
         if (cancelled) return
@@ -1429,8 +1451,11 @@ export default function VerificationPage() {
         if (cancelled) return
         setParsedTitles(prev => ({ ...prev, [key]: '' }))
       }
-    })()
-    return () => { cancelled = true }
+    }, PARSE_FIELD_DEBOUNCE_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
   }, [selectedSourceId, verifyTexts, currentSource, parsedTitles])
 
   const selectedParsedTitle = useMemo(() => {
@@ -1453,6 +1478,13 @@ export default function VerificationPage() {
   // never collapses to its min when the selected card sits near the bottom of
   // the list (scroll-to-top can't always lift it to the top when the list has
   // insufficient scrollable room below the card).
+  // True while the Verification tab is the one on screen (App keeps every
+  // page mounted and hides inactive ones with display:none).
+  function isVerificationTabVisible(): boolean {
+    const el = verifyCenterRef.current
+    return !!el && el.getClientRects().length > 0
+  }
+
   function getOverlayMaxHeight(): number {
     const minHeight = 220
     const topMargin = 80
@@ -1569,6 +1601,12 @@ export default function VerificationPage() {
   }
 
   function openOverlayWithUrl(url: string) {
+    // Re-opening the URL that is already set doesn't change the `src` prop,
+    // so React wouldn't navigate. Navigate explicitly, so the page shown
+    // matches the URL bar again after the user browsed away.
+    if (browserOverlayOpen && url === browserOverlayUrl) {
+      void browserWebviewRef.current?.loadURL?.(url)?.catch?.(() => {})
+    }
     setBrowserOverlayUrl(url)
     setBrowserCurrentUrl(url)
     setBrowserOverlayOpen(true)
@@ -1610,15 +1648,10 @@ export default function VerificationPage() {
     }
     const forward = opts?.forward ?? true
     try {
-      // findNext: false starts a new search session but does not always
-      // activate/scroll to a match on its own. Follow up with findNext: true
-      // so the first match becomes active and scrolls into view.
-      if (opts?.findNext) {
-        view.findInPage?.(text, { findNext: true, forward })
-      } else {
-        view.findInPage?.(text, { findNext: false, forward })
-        view.findInPage?.(text, { findNext: true, forward })
-      }
+      // A new search (findNext: false) activates and scrolls to the first
+      // match on its own with WebView2's Find API. Electron needed a second
+      // findNext:true call here, which would now skip to match #2.
+      view.findInPage?.(text, { findNext: Boolean(opts?.findNext), forward })
     } catch {
       // ignore find errors
     }
@@ -1812,6 +1845,10 @@ export default function VerificationPage() {
     // window grows the overlay instead of leaving it stuck at the old size.
     const ro = new ResizeObserver(() => {
       const newPanelHeight = panel.clientHeight
+      // Hidden tab (display:none) reports 0. Ignore it: clamping against it
+      // shrank the overlay to the 220 px floor, and a remembered 0 then
+      // disabled the gap-preserving restore when the tab came back.
+      if (newPanelHeight === 0) return
       const oldPanelHeight = prevPanelHeightRef.current
       prevPanelHeightRef.current = newPanelHeight
       setBrowserOverlayHeight((h) => {
@@ -1866,73 +1903,30 @@ export default function VerificationPage() {
       syncBrowserZoomState()
     }
 
-    // Inject zoom + find + nav handlers into webview content so keyboard and
-    // mouse shortcuts work when focus is inside the guest page. Events are
-    // relayed back via console.log sentinels.
-    const injectZoomScript = () => {
-      try {
-        view.executeJavaScript?.(`
-          (function() {
-            if (window.__zoomInjected) return;
-            window.__zoomInjected = true;
-            document.addEventListener('wheel', function(e) {
-              if (e.ctrlKey || e.metaKey) {
-                e.preventDefault();
-                console.log(e.deltaY > 0 ? '__ZOOM_OUT__' : '__ZOOM_IN__');
-              }
-            }, { passive: false });
-            document.addEventListener('keydown', function(e) {
-              if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'f' || e.key === 'F')) {
-                e.preventDefault();
-                e.stopPropagation();
-                console.log('__FIND_OPEN__');
-              } else if (e.key === 'Escape') {
-                console.log('__OVERLAY_ESC__');
-              } else if (e.key === 'F5') {
-                e.preventDefault();
-                e.stopPropagation();
-                console.log('__OVERLAY_RELOAD__');
-              }
-            }, true);
-            document.addEventListener('mousedown', function(e) {
-              if (e.button === 3) {
-                e.preventDefault();
-                console.log('__OVERLAY_BACK__');
-              } else if (e.button === 4) {
-                e.preventDefault();
-                console.log('__OVERLAY_FORWARD__');
-              }
-            }, true);
-            document.addEventListener('auxclick', function(e) {
-              // Some browsers fire auxclick for thumb buttons even after
-              // mousedown preventDefault — still block default navigation.
-              if (e.button === 3 || e.button === 4) e.preventDefault();
-            }, true);
-          })();
-        `)
-      } catch {
-        // ignore injection errors
+    // Keyboard shortcuts pressed while the guest page has focus are caught
+    // natively by the host (WebView2 AcceleratorKeyPressed) and arrive here
+    // as `guest-shortcut` events. Electron injected a script into every
+    // guest page and relayed keys through console.log sentinels, which any
+    // website could spoof. Ctrl+wheel zoom is native WebView2 zoom (clamped
+    // by the host) and reported through `zoom-changed`. Mouse back/forward
+    // buttons navigate the guest history natively.
+    const onGuestShortcut = (event: any) => {
+      switch (event?.action) {
+        case 'zoom-in': zoomBrowserIn(); break
+        case 'zoom-out': zoomBrowserOut(); break
+        case 'zoom-reset': applyBrowserZoom(1); break
+        case 'find': openFindBar(); break
+        case 'escape':
+          if (findBarOpenRef.current) closeFindBar()
+          else closeBrowserOverlay()
+          break
+        case 'reload': reloadBrowserView(); break
+        case 'back': goBrowserBack(); break
+        case 'forward': goBrowserForward(); break
       }
     }
 
-    const onDomReady = () => {
-      injectZoomScript()
-      onViewStateChange()
-    }
-
-    const onConsoleMessage = (event: any) => {
-      const msg = event?.message
-      if (msg === '__ZOOM_IN__') zoomBrowserIn()
-      else if (msg === '__ZOOM_OUT__') zoomBrowserOut()
-      else if (msg === '__FIND_OPEN__') openFindBar()
-      else if (msg === '__OVERLAY_ESC__') {
-        if (findBarOpenRef.current) closeFindBar()
-        else closeBrowserOverlay()
-      }
-      else if (msg === '__OVERLAY_RELOAD__') reloadBrowserView()
-      else if (msg === '__OVERLAY_BACK__') goBrowserBack()
-      else if (msg === '__OVERLAY_FORWARD__') goBrowserForward()
-    }
+    const onZoomChanged = () => syncBrowserZoomState()
 
     const onFoundInPage = (event: any) => {
       const r = event?.result
@@ -1943,28 +1937,32 @@ export default function VerificationPage() {
 
     view.addEventListener('did-navigate', onViewStateChange)
     view.addEventListener('did-navigate-in-page', onViewStateChange)
-    view.addEventListener('did-stop-loading', onDomReady)
-    view.addEventListener('dom-ready', onDomReady)
-    view.addEventListener('console-message', onConsoleMessage)
+    view.addEventListener('did-stop-loading', onViewStateChange)
+    view.addEventListener('dom-ready', onViewStateChange)
+    view.addEventListener('guest-shortcut', onGuestShortcut)
+    view.addEventListener('zoom-changed', onZoomChanged)
     view.addEventListener('found-in-page', onFoundInPage)
 
-    const timer = window.setTimeout(onDomReady, 100)
+    onViewStateChange()
 
     return () => {
-      window.clearTimeout(timer)
       view.removeEventListener('did-navigate', onViewStateChange)
       view.removeEventListener('did-navigate-in-page', onViewStateChange)
-      view.removeEventListener('did-stop-loading', onDomReady)
-      view.removeEventListener('dom-ready', onDomReady)
-      view.removeEventListener('console-message', onConsoleMessage)
+      view.removeEventListener('did-stop-loading', onViewStateChange)
+      view.removeEventListener('dom-ready', onViewStateChange)
+      view.removeEventListener('guest-shortcut', onGuestShortcut)
+      view.removeEventListener('zoom-changed', onZoomChanged)
       view.removeEventListener('found-in-page', onFoundInPage)
     }
-  }, [browserOverlayOpen, browserOverlayUrl, selectedSourceId, syncBrowserZoomState, zoomBrowserIn, zoomBrowserOut, openFindBar, closeFindBar])
+  }, [browserOverlayOpen, browserOverlayUrl, selectedSourceId, syncBrowserZoomState, zoomBrowserIn, zoomBrowserOut, applyBrowserZoom, openFindBar, closeFindBar])
 
   useEffect(() => {
     if (!browserOverlayOpen) return
 
     const onKeyDown = (e: KeyboardEvent) => {
+      // The page stays mounted (display:none) while another tab is active;
+      // don't steal Esc / F5 / Ctrl+F / Ctrl± from the Parsing or Settings tab.
+      if (!isVerificationTabVisible()) return
       if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault()
         openFindBar()
@@ -2009,6 +2007,7 @@ export default function VerificationPage() {
     // (which natively navigates its own history — same outcome), so this
     // listener handles clicks over the header, banner, and surrounding chrome.
     const onMouseDown = (e: MouseEvent) => {
+      if (!isVerificationTabVisible()) return
       if (e.button === 3) {
         e.preventDefault()
         goBrowserBack()
@@ -2054,10 +2053,11 @@ export default function VerificationPage() {
       if (e.deltaY < 0) zoomBrowserIn()
     }
 
-    overlay?.addEventListener('wheel', onWheel, { passive: false })
+    // One window-level capture listener. The handler was also attached to
+    // the overlay element, so every notch over the overlay chrome zoomed
+    // twice.
     window.addEventListener('wheel', onWheel, { passive: false, capture: true })
     return () => {
-      overlay?.removeEventListener('wheel', onWheel)
       window.removeEventListener('wheel', onWheel, true)
     }
   }, [browserOverlayOpen, browserOverlayUrl, zoomBrowserIn, zoomBrowserOut])
@@ -2431,7 +2431,7 @@ export default function VerificationPage() {
               </div>
               <div className={styles['toolbar-right']}>
                 <div
-                  className={`${styles['sort-dropdown']} ${sortOpen ? styles['sort-dropdown-open'] : ''}`}
+                  className={styles['sort-dropdown']}
                   ref={sortDropdownRef}
                 >
                   <button
@@ -2881,7 +2881,7 @@ export default function VerificationPage() {
                     </button>
                     <button
                       className={`${styles['action-btn']} ${styles['overlay-icon-btn']}`}
-                      onClick={() => openExternal(browserOverlayUrl)}
+                      onClick={() => openExternal(browserCurrentUrl || browserOverlayUrl)}
                       title={t('verification.browser.openExternal')}
                       aria-label={t('verification.browser.openExternal')}
                     >
@@ -2905,16 +2905,16 @@ export default function VerificationPage() {
                   </div>
                 </div>
                 <div className={styles['scholar-overlay-webview-wrap']}>
-                  <webview
+                  <atfi-webview
                     ref={browserWebviewRef}
                     className={styles['scholar-overlay-webview']}
                     src={browserOverlayUrl}
                     partition="persist:scholar-panel"
-                    {...({ allowpopups: 'true', ...(scholarPanelUserAgent ? { useragent: scholarPanelUserAgent } : {}) } as Record<string, string>)}
+                    allowpopups="true"
                   />
-                  {/* Transparent shield covers the webview during resize so mouseup reaches
-                      the host window — the webview's guest process otherwise swallows it
-                      and leaves the drag stuck on. */}
+                  {/* Transparent shield over the webview area during a resize drag.
+                      (With the native WebView2 view the main page's mouse capture
+                      already keeps the drag alive; the shield stays as a fallback.) */}
                   {overlayResizing && (
                     <div
                       className={styles['webview-drag-shield']}
@@ -2925,7 +2925,9 @@ export default function VerificationPage() {
                     />
                   )}
                   {findBarOpen && (
-                    <div className={styles['find-bar']} role="search">
+                    // data-webview-occluder: the native view is given a hole here
+                    // so this HTML bar stays visible above the guest page.
+                    <div className={styles['find-bar']} role="search" data-webview-occluder="">
                       <input
                         ref={findInputRef}
                         className={styles['find-input']}
@@ -2998,15 +3000,16 @@ export default function VerificationPage() {
 
           </>
         )}
-        {/* Hidden webview for Scholar scanner. Mounted unconditionally
+        {/* Hidden webview for the Scholar scanner. Mounted unconditionally
             (sibling of the empty-state branches above) so switching PDFs
-            doesn't unmount/remount the underlying Electron guest while
-            sources are being lazy-loaded into the store. */}
-        <webview
+            doesn't recreate the native guest while sources are being
+            lazy-loaded into the store. `background` tells the host to keep it
+            alive off-screen at 1280×800 regardless of tab visibility. */}
+        <atfi-webview
           ref={scholarScanWebviewRef}
           src="about:blank"
           partition="persist:scholar-panel"
-          {...(scholarPanelUserAgent ? ({ useragent: scholarPanelUserAgent } as Record<string, string>) : {})}
+          background=""
           style={{ position: 'fixed', left: '-9999px', top: '0', width: '1280px', height: '800px', opacity: 0, pointerEvents: 'none' } as React.CSSProperties}
         />
       </section>

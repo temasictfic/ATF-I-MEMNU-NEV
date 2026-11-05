@@ -2,7 +2,6 @@
 // (color, icon, label). Single source of truth so ParsingPage, VerificationPage,
 // and the PDF report writer can't drift apart.
 
-import i18n from '../i18n'
 import type { VerificationResult } from '../api/types'
 import { DB_SCORE_HEX, DB_SCORE_RGB, STATUS_HEX, STATUS_RGB } from '../constants/colors'
 import {
@@ -43,17 +42,6 @@ export function verifyStatusColor(result: VerificationResult | undefined): strin
     case 'low':         return STATUS_HEX.low
     case 'in_progress': return STATUS_HEX.in_progress
     default:            return STATUS_HEX.neutral
-  }
-}
-
-export function verifyStatusLabel(result: VerificationResult | undefined): string {
-  if (!result) return i18n.t('verification.status.pending')
-  switch (result.status) {
-    case 'high':        return i18n.t('verification.status.high')
-    case 'medium':      return i18n.t('verification.status.medium')
-    case 'low':         return i18n.t('verification.status.low')
-    case 'in_progress': return i18n.t('verification.status.in_progress')
-    default:            return i18n.t('verification.status.pending')
   }
 }
 

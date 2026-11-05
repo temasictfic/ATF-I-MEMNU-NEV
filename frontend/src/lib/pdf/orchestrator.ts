@@ -1,5 +1,5 @@
 // Client-side parse orchestrator. Replaces the backend parse job: reads PDF
-// bytes via the Electron fs IPC, parses them with pdfjs-dist, and runs the
+// bytes via the host (GET /__host/pdf), parses them with pdfjs-dist, and runs the
 // TypeScript source detector. The caller merges the result into pdf-store
 // / sources-store exactly like the old backend parse flow did.
 //
@@ -11,6 +11,7 @@ import { api } from '../api/rest-client'
 import type { SourceRectangle } from '../api/types'
 import { parsePdf } from './parser'
 import { detectSources } from './source-detector'
+import { hostAPI } from '../host/bridge'
 
 export interface ParseOutcome {
   pdfId: string
@@ -60,23 +61,24 @@ export async function parseAndDetect(filePath: string): Promise<ParseOutcome> {
 
   try {
     // Check the backend source cache first so prior edits + approvals survive.
-    // The endpoint returns 200 with `cached: false` when nothing is stored so
-    // devtools doesn't log a 404 for every fresh import.
     let cacheResult:
       | { sources: SourceRectangle[]; numbered: boolean; approved: boolean; pageCount: number | null }
       | null = null
-    try {
-      const res = await api.getSources(pdfId)
-      if (res?.cached) {
-        cacheResult = {
-          sources: res.sources,
-          numbered: res.numbered ?? res.sources.some(s => s.ref_number != null),
-          approved: res.approved ?? false,
-          pageCount: typeof res.page_count === 'number' ? res.page_count : null,
-        }
+    // A miss is a 200 with `cached: false`. Any *error* means the backend
+    // couldn't answer, not that there is no cache. Treating it as a miss
+    // used to re-detect sources and PUT them over the user's edited or
+    // approved cache, so retry once and otherwise fail this import.
+    const res = await api.getSources(pdfId).catch(async () => {
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      return api.getSources(pdfId)
+    })
+    if (res?.cached) {
+      cacheResult = {
+        sources: res.sources,
+        numbered: res.numbered ?? res.sources.some(s => s.ref_number != null),
+        approved: res.approved ?? false,
+        pageCount: typeof res.page_count === 'number' ? res.page_count : null,
       }
-    } catch {
-      cacheResult = null
     }
 
     // Cache hit with a stored page count: skip the full PDF parse entirely.
@@ -97,7 +99,7 @@ export async function parseAndDetect(filePath: string): Promise<ParseOutcome> {
       }
     }
 
-    const bytes = await window.electronAPI.readPdfFile(filePath)
+    const bytes = await hostAPI.readPdfFile(filePath)
     const parsed = await parsePdf(bytes, { id: pdfId, name, path: filePath })
 
     // Cache hit but no stored page count (older cache file written before

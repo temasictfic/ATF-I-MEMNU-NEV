@@ -38,10 +38,6 @@ export function effectiveTagOn(result: TagStateResultLike | undefined, tag: TagK
   return defaultTagOn(result, tag)
 }
 
-export function anyTagOn(result: TagStateResultLike | undefined): boolean {
-  return TAG_ORDER.some(t => effectiveTagOn(result, t))
-}
-
 /** Classify the decision from the currently-effective chip states, using the
  *  rule mirrored from the backend's classify_decision(). A chip OFF means the
  *  signal matches; a chip ON means it disagrees or is missing on one side. */

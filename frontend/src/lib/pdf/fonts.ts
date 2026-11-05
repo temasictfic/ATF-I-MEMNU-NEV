@@ -17,13 +17,22 @@ async function loadFontBytes(url: string): Promise<Uint8Array> {
   return new Uint8Array(await res.arrayBuffer())
 }
 
+// A rejected load is not cached: the old `??=` kept the failed promise, so
+// one transient fetch error broke auto-notes and every export for the rest
+// of the session.
 function getRegularFontBytes(): Promise<Uint8Array> {
-  regularFontBytesPromise ??= loadFontBytes(regularFontUrl as string)
+  regularFontBytesPromise ??= loadFontBytes(regularFontUrl as string).catch((err) => {
+    regularFontBytesPromise = null
+    throw err
+  })
   return regularFontBytesPromise
 }
 
 function getBoldFontBytes(): Promise<Uint8Array> {
-  boldFontBytesPromise ??= loadFontBytes(boldFontUrl as string)
+  boldFontBytesPromise ??= loadFontBytes(boldFontUrl as string).catch((err) => {
+    boldFontBytesPromise = null
+    throw err
+  })
   return boldFontBytesPromise
 }
 

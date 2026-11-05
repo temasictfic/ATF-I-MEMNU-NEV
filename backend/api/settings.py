@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter
-from models.settings import AppSettings, DatabaseConfig
+from models.settings import AppSettings
 from pydantic import BaseModel
 from services.openaire_token_manager import (
     exchange_refresh_token,
@@ -141,17 +141,6 @@ async def reorder_database(req: DatabaseReorderRequest):
         else:
             dbs.insert(after_idx + 1, moved)
     new_settings = previous.model_copy(update={"databases": dbs})
-    save_settings(new_settings)
-    return new_settings.model_dump()
-
-
-@router.post("/settings/databases")
-async def add_database(db: DatabaseConfig):
-    previous = get_current_settings()
-    if any(d.id == db.id for d in previous.databases):
-        return previous.model_dump()
-    new_dbs = [*previous.databases, db]
-    new_settings = previous.model_copy(update={"databases": new_dbs})
     save_settings(new_settings)
     return new_settings.model_dump()
 

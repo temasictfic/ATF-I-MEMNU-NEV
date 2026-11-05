@@ -5,10 +5,7 @@ import './lib/i18n'
 // pdfjs-dist's text layer and annotation layer CSS — required for the
 // transparent selectable text overlay to position glyph spans correctly.
 import 'pdfjs-dist/web/pdf_viewer.css'
-import { initializeBackendEndpoint } from './lib/api/backend-endpoint'
+// Registers <atfi-webview> (native WebView2 views managed by the host).
+import './lib/host/webview-element'
 
 createRoot(document.getElementById('app')!).render(<App />)
-
-void initializeBackendEndpoint().catch((error) => {
-  console.error('[Startup] Backend initialization failed:', error)
-})

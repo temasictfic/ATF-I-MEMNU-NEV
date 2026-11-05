@@ -193,38 +193,6 @@ function mergeTwo(pdfId: string, aId: string, bId: string): string | null {
 }
 
 /**
- * Merge a source rectangle with its closest neighbor (by bbox center distance).
- * Same-page neighbors are preferred. Returns the id of the resulting merged source,
- * or null if there is no other source to merge with.
- */
-export function mergeWithClosest(pdfId: string, sourceId: string): string | null {
-  const all = useSourcesStore.getState().sourcesByPdf[pdfId] ?? []
-  const target = all.find(s => s.id === sourceId)
-  if (!target || all.length < 2) return null
-
-  const targetCx = (target.bbox.x0 + target.bbox.x1) / 2
-  const targetCy = (target.bbox.y0 + target.bbox.y1) / 2
-
-  let closest: SourceRectangle | null = null
-  let closestDist = Infinity
-  for (const s of all) {
-    if (s.id === sourceId) continue
-    const cx = (s.bbox.x0 + s.bbox.x1) / 2
-    const cy = (s.bbox.y0 + s.bbox.y1) / 2
-    // Penalize different pages heavily so same-page neighbors win
-    const pagePenalty = s.bbox.page === target.bbox.page ? 0 : 100000
-    const dist = Math.hypot(cx - targetCx, cy - targetCy) + pagePenalty
-    if (dist < closestDist) {
-      closestDist = dist
-      closest = s
-    }
-  }
-  if (!closest) return null
-
-  return mergeTwo(pdfId, target.id, closest.id)
-}
-
-/**
  * Merge a source rectangle with the one immediately preceding it in reading
  * order (ref_number - 1). The merged result inherits the previous source's
  * number, so the selected box does not introduce a new source. Returns
@@ -308,10 +276,6 @@ export function revert(pdfId: string): void {
   })
   if (newLength !== null) updateSourceCount(pdfId, newLength)
   autoUnapproveOnEdit(pdfId)
-}
-
-export function canRevert(pdfId: string): boolean {
-  return (useSourcesStore.getState().historyByPdf[pdfId]?.length ?? 0) > 0
 }
 
 export async function revertToOriginal(pdfId: string): Promise<void> {

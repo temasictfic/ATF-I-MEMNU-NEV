@@ -1,26 +1,28 @@
 import { getBackendBaseUrl } from './backend-endpoint'
+import { authHeaders } from '../host/boot'
+
+/** Non-2xx response from the backend. `status` lets callers tell "not found" from "unreachable". */
+export class ApiError extends Error {
+  constructor(public readonly status: number, body: string) {
+    super(`API error ${status}: ${body}`)
+    this.name = 'ApiError'
+  }
+}
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const baseUrl = await getBackendBaseUrl()
-  const opts: RequestInit = {
-    method,
-    headers: { 'Content-Type': 'application/json' }
-  }
+  const opts: RequestInit = { method, headers: authHeaders() }
   if (body !== undefined) {
+    opts.headers = authHeaders({ 'Content-Type': 'application/json' })
     opts.body = JSON.stringify(body)
   }
-  const res = await fetch(`${baseUrl}${path}`, opts)
+  const res = await fetch(`${getBackendBaseUrl()}${path}`, opts)
   if (!res.ok) {
-    const errorText = await res.text()
-    throw new Error(`API error ${res.status}: ${errorText}`)
+    throw new ApiError(res.status, await res.text())
   }
   return res.json()
 }
 
 export const api = {
-  // Health
-  health: () => request<{ status: string }>('GET', '/api/health'),
-
   // Source cache persistence — the backend no longer parses PDFs; these
   // endpoints read and write the `{output_dir}/cache/{pdf_id}.json` files
   // that the client-side orchestrator populates after parsing.
@@ -54,22 +56,13 @@ export const api = {
   unapprovePdf: (pdfId: string) =>
     request<{ success: boolean }>('POST', `/api/parse/unapprove/${pdfId}`),
 
-  removePdf: (pdfId: string) =>
-    request<{ success: boolean }>('DELETE', `/api/parse/pdf/${pdfId}`),
-
   // NER field extraction — the only remaining backend-side PDF-ish work.
   extractFields: (text: string) =>
     request<import('./types').ParsedSource>('POST', '/api/parse/extract-fields', { text }),
 
   // Verification
-  verify: (pdfIds: string[]) =>
-    request<{ job_id: string }>('POST', '/api/verify', { pdf_ids: pdfIds }),
-
   verifyBatch: (pdfIds: string[], texts: Record<string, string>, excludedIds: string[]) =>
     request<{ job_id: string }>('POST', '/api/verify/batch', { pdf_ids: pdfIds, texts, excluded_ids: excludedIds }),
-
-  verifyPdf: (pdfId: string) =>
-    request<{ job_id: string }>('POST', `/api/verify/pdf/${pdfId}`),
 
   verifySource: (pdfId: string, sourceId: string, text?: string) =>
     request<{ job_id: string }>('POST', `/api/verify/source/${pdfId}/${sourceId}`, { text }),
@@ -136,9 +129,6 @@ export const api = {
       id,
       after_id: afterId,
     }),
-
-  addDatabase: (db: import('./types').DatabaseConfig) =>
-    request<import('./types').AppSettings>('POST', '/api/settings/databases', db),
 
   removeDatabase: (dbId: string) =>
     request<import('./types').AppSettings>('DELETE', `/api/settings/databases/${dbId}`),

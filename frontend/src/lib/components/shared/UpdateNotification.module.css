@@ -18,14 +18,17 @@
   z-index: 10;
 }
 
+/* Keep the -50% vertical centering inside the animation: the old keyframes
+   animated translateY(4px -> 0), which overrode it, so the card sat off-centre
+   for 0.22 s and then jumped. */
 @keyframes fade-in {
   from {
     opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(calc(-50% + 4px));
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(-50%);
   }
 }
 
@@ -53,21 +56,16 @@
   box-shadow: 0 0 0 4px rgba(132, 204, 22, 0.2);
 }
 
+.dot-model {
+  background: #38bdf8;
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.22);
+}
+
 .dot-error {
   background: #ef4444;
   box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.2);
 }
 
-.message {
-  margin: 0;
-  min-width: 0;
-  font-size: 12px;
-  line-height: 1;
-  color: #fde68a;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .hover-area {
   position: relative;
   display: flex;

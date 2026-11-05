@@ -710,15 +710,6 @@
 }
 .actions-empty-text { font-size: 12px; color: #a8a29e; text-align: center; }
 
-.count-badge {
-  font-size: 11px;
-  font-weight: 600;
-  color: #d97706;
-  background: #fef3c7;
-  padding: 2px 8px;
-  border-radius: 10px;
-}
-
 .source-detail-heading {
   display: flex;
   align-items: center;
@@ -747,64 +738,6 @@
   border-color: #fcd34d;
 }
 
-.detail-separator {
-  border-top: 1px solid #e7e5e4;
-  margin: 16px 0 12px;
-}
-.section-title {
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: #78716c;
-  margin: 0 0 10px;
-}
-
-.action-buttons {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.btn-action {
-  padding: 10px 16px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  border: none;
-  transition: all 0.15s;
-}
-.btn-approve {
-  background: linear-gradient(135deg, #d97706, #b45309);
-  color: white;
-  box-shadow: 0 2px 8px rgba(217, 119, 6, 0.25);
-}
-.btn-approve:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(217, 119, 6, 0.35); }
-.btn-approve:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
-
-.btn-approved {
-  background: #22c55e;
-  color: white;
-  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.25);
-}
-.btn-approved:hover { background: #16a34a; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(34, 197, 94, 0.35); }
-.btn-approved:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
-
-.btn-revert {
-  background: white;
-  color: #44403c;
-  border: 1px solid #d6d3d1;
-}
-.btn-revert:hover { background: #f5f5f4; }
-.btn-revert:disabled { opacity: 0.4; cursor: not-allowed; }
-
-.btn-revert-all {
-  background: transparent;
-  color: #a8a29e;
-  font-size: 11px;
-}
-.btn-revert-all:hover { color: #ef4444; }
-
 /* Source detail panel */
 .source-detail {
   display: flex;
@@ -820,13 +753,6 @@
   display: inline-flex;
   align-items: baseline;
   gap: 6px;
-}
-.detail-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 6px 0;
-  border-bottom: 1px solid #f5f5f4;
 }
 .detail-label {
   font-size: 11px;
@@ -861,19 +787,6 @@
   background: #fef2f2;
   border-color: #fca5a5;
 }
-.detail-status {
-  padding: 1px 8px;
-  border-radius: 8px;
-  font-size: 10px;
-  background: #fef3c7;
-  color: #d97706;
-}
-.detail-text-section {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
-}
 .detail-text-display {
   width: 100%;
   border: 1px solid #e7e5e4;
@@ -889,18 +802,6 @@
   word-break: break-word;
   user-select: text;
 }
-.detail-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-}
-.btn-detail-remove {
-  background: white;
-  color: #ef4444;
-  border: 1px solid #fecaca;
-}
-.btn-detail-remove:hover { background: #fef2f2; }
 
 /* Parsed fields display */
 .fields-loading {
@@ -996,4 +897,16 @@
 /* Multi-page continuation rects */
 .source-rect-continuation {
   border-style: dashed;
+}
+
+/* Referenced by NotesLayer.tsx but missing from this module before the port,
+   which rendered class="undefined". Same values as the inline styles. */
+.notes-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.notes-draw-preview {
+  position: absolute;
+  pointer-events: none;
 }

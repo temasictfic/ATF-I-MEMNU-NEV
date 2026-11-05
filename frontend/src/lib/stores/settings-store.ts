@@ -7,6 +7,7 @@ import {
 } from '../constants/timings'
 import i18n from '../i18n'
 import { parseExclusionList, type ExclusionEntry } from '../utils/exclusion-list'
+import { hostAPI } from '../host/bridge'
 
 export const DEFAULT_EXCLUSION_LIST_URL =
   'https://docs.google.com/spreadsheets/d/e/2PACX-1vS-DWUY4jAnn2b-DSVeLw7-kVT3pE77ZP-lnP47yt73WojeJJuUTmUPDoxLQQ3lIc0kvdUV8c87fWAY/pub?gid=355872624&single=true&output=tsv'
@@ -54,7 +55,6 @@ interface SettingsState {
   loadSettings: () => Promise<void>
   updateSetting: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void
   toggleDatabase: (dbId: string) => void
-  addDatabase: (db: DatabaseConfig) => void
   removeDatabase: (dbId: string) => void
   reorderDatabases: (fromIdx: number, toIdx: number) => void
   updateApiKey: (key: string, value: string) => void
@@ -214,7 +214,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       return
     }
     try {
-      const result = await window.electronAPI.fetchExclusionList(url)
+      const result = await hostAPI.fetchExclusionList(url)
       if (result.text !== null) {
         set({
           exclusionEntries: parseExclusionList(result.text),
@@ -251,17 +251,6 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
       },
     }))
     _runDatabaseOp(() => api.setDatabaseEnabled(dbId, newEnabled))
-  },
-
-  addDatabase: (db: DatabaseConfig) => {
-    if (!get().settingsLoaded) return
-    set(state => ({
-      settings: {
-        ...state.settings,
-        databases: [...state.settings.databases, db],
-      },
-    }))
-    _runDatabaseOp(() => api.addDatabase(db))
   },
 
   removeDatabase: (dbId: string) => {

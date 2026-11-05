@@ -64,6 +64,7 @@ import { parseStatusColor, parseStatusIcon } from "../../utils/status-helpers";
 import { HIGHLIGHT_PALETTE_HEX } from "../../constants/colors";
 import { PARSE_FIELD_DEBOUNCE_MS } from "../../constants/timings";
 import styles from "./ParsingPage.module.css";
+import { hostAPI } from "../../host/bridge";
 
 const statusOrder: Record<string, number> = {
   approved: 0,
@@ -183,6 +184,10 @@ export default function ParsingPage() {
     if (!selectedPdfId || !selectedNoteId || activeNoteKind === null) return;
     const onDocKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Delete") return;
+      // ParsingPage stays mounted (display:none) while another tab is
+      // shown; don't delete a note from there (e.g. while editing a
+      // Verification card).
+      if (!pageRootRef.current || pageRootRef.current.getClientRects().length === 0) return;
       e.preventDefault();
       beginNoteEdit(selectedPdfId);
       removeNote(selectedPdfId, selectedNoteId);
@@ -251,7 +256,9 @@ export default function ParsingPage() {
   const [scale, setScale] = useState(1);
   const [containerWidth, setContainerWidth] = useState(0);
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
-  const [manualCounter, setManualCounter] = useState(0);
+  // A ref, not state: onMouseUp is a useCallback([]) and read a stale 0, so
+  // every drawn rectangle got the id `…_ref_manual_1`.
+  const manualCounterRef = useRef(0);
   const [parsedFields, setParsedFields] = useState<ParsedSource | null>(null);
   const [parsedFieldsLoading, setParsedFieldsLoading] = useState(false);
   // Keyed by the raw source text, NOT the source ID. When the user edits a
@@ -263,6 +270,7 @@ export default function ParsingPage() {
 
   // Refs for interaction state (not reactive, no re-render needed)
   const viewerRef = useRef<HTMLDivElement>(null);
+  const pageRootRef = useRef<HTMLDivElement>(null);
   const loadedPdfIdRef = useRef<string | null>(null);
   // Monotonic counter bumped on every `loadPdfPages` call. Each load captures
   // its own generation at entry and re-checks after every `await`; if the
@@ -559,7 +567,7 @@ export default function ParsingPage() {
 
   async function handleImport() {
     try {
-      const files = await window.electronAPI.selectPdfs();
+      const files = await hostAPI.selectPdfs();
       if (files.length > 0) {
         await usePdfStore.getState().loadFiles(files);
         recordSessionImport(files);
@@ -576,14 +584,18 @@ export default function ParsingPage() {
     recordSessionImport(paths);
   }
 
-  function extractPdfPathsFromDrop(dt: DataTransfer): string[] {
-    const out: string[] = [];
-    for (const file of Array.from(dt.files)) {
-      if (!file.name.toLowerCase().endsWith(".pdf")) continue;
-      const path = window.electronAPI.getPathForFile(file);
-      if (path) out.push(path);
+  // Dropped File objects carry no filesystem path in WebView2; the host
+  // resolves them (postMessageWithAdditionalObjects), so this is async now.
+  async function extractPdfPathsFromDrop(dt: DataTransfer): Promise<string[]> {
+    const pdfs = Array.from(dt.files).filter((file) =>
+      file.name.toLowerCase().endsWith(".pdf"),
+    );
+    try {
+      return await hostAPI.getPathsForFiles(pdfs);
+    } catch (err) {
+      console.error("[Drop] Could not resolve dropped file paths:", err);
+      return [];
     }
-    return out;
   }
 
   function handleDragEnter(e: React.DragEvent) {
@@ -610,13 +622,13 @@ export default function ParsingPage() {
     e.preventDefault();
     dragCounterRef.current = 0;
     setIsDragOver(false);
-    const paths = extractPdfPathsFromDrop(e.dataTransfer);
+    const paths = await extractPdfPathsFromDrop(e.dataTransfer);
     await importPdfPaths(paths);
   }
 
   // Prevent the renderer from navigating to a dropped file when the user
-  // misses the panel. Without these handlers, Electron's default behavior
-  // is to navigate the window to file:// of the first dropped file.
+  // misses the panel. Without these handlers, the browser's default
+  // behavior is to navigate the window to file:// of the first dropped file.
   useEffect(() => {
     const prevent = (ev: DragEvent) => ev.preventDefault();
     window.addEventListener("dragover", prevent);
@@ -966,18 +978,18 @@ export default function ParsingPage() {
       if (configuredDir) {
         target = buildDefaultSavePath(configuredDir, defaultName);
       } else {
-        target = await window.electronAPI.showSaveAs({
+        target = await hostAPI.showSaveAs({
           title: "Save annotated PDF",
           defaultPath: defaultName,
           filters: [{ name: "PDF Files", extensions: ["pdf"] }],
         });
       }
       if (!target) return;
-      const bytes = await window.electronAPI.readPdfFile(localPath);
+      const bytes = await hostAPI.readPdfFile(localPath);
       // Lazy-load pdf-lib + fontkit (~1.2 MB) only on first export.
       const { writeNotesToPdf } = await import("../../pdf/annotation-writer");
       const annotated = await writeNotesToPdf(bytes, pdfNotes);
-      await window.electronAPI.writePdfFile(target, annotated);
+      await hostAPI.writePdfFile(target, annotated);
       // Flash a success state on the Export button for ~1.8 s.
       setExportSuccess(true);
       window.setTimeout(() => setExportSuccess(false), 1800);
@@ -1134,8 +1146,7 @@ export default function ParsingPage() {
         const pageY1 = pdfY1 - currentPageOffsets[targetPage];
 
         if (pdfX1 - pdfX0 > 5 && pdfY1 - pdfY0 > 5) {
-          const counter = manualCounter + 1;
-          setManualCounter(counter);
+          const counter = ++manualCounterRef.current;
           const newId = `${interactionPdfId}_ref_manual_${counter}`;
           const newBbox = {
             x0: pdfX0,
@@ -1289,9 +1300,16 @@ export default function ParsingPage() {
     const isEditable =
       target instanceof HTMLInputElement ||
       target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
       (target?.isContentEditable ?? false);
+    // The note-delete handler (document, capture phase) already consumed
+    // this Delete. Handling it again here also removed the hidden source.
+    if (e.defaultPrevented) return;
+    // Text fields keep their native Ctrl+Z / Space behaviour. Space used to
+    // be swallowed and merge sources while typing in the notes panel.
+    if (isEditable) return;
 
-    if (e.key === "Delete" && !isEditable && selectedSourceId && selectedPdfId) {
+    if (e.key === "Delete" && selectedSourceId && selectedPdfId) {
       handleRemoveSource(selectedSourceId);
     }
     if (e.key === "z" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
@@ -1360,6 +1378,7 @@ export default function ParsingPage() {
 
   return (
     <div
+      ref={pageRootRef}
       className={styles["parsing-page"]}
       tabIndex={-1}
       onMouseMove={onMouseMove}
@@ -2409,7 +2428,7 @@ export default function ParsingPage() {
                             href={parsedFields.url}
                             onClick={(e) => {
                               e.preventDefault();
-                              window.electronAPI
+                              hostAPI
                                 .openExternal(parsedFields.url!)
                                 .catch((err) =>
                                   console.error("Failed to open URL:", err),

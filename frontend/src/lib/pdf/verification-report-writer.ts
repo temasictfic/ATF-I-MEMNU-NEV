@@ -18,6 +18,7 @@ import fontkit from '@pdf-lib/fontkit'
 import { STATUS_RGB, DECISION_RGB } from '../constants/colors'
 import { dbScoreRgbTuple, verifyStatusRgbTuple } from '../utils/status-helpers'
 import { getLiberationFontBytes } from './fonts'
+import { TITLE_MATCH_THRESHOLD } from '../constants/scoring'
 
 // A4
 const PAGE_W = 595.28
@@ -357,7 +358,7 @@ function measureTags(src: ReportSource, labels: ReportData['labels'], bf: PDFFon
     if (tag === 'title') {
       const pct = src.bestMatch ? Math.round(src.bestMatch.titleSimilarity * 100) : null
       const text = pct != null ? `${labels.titleTag}: ${pct}%` : `${labels.titleTag}: —`
-      const titleColor = src.bestMatch && src.bestMatch.titleSimilarity >= 0.85
+      const titleColor = src.bestMatch && src.bestMatch.titleSimilarity >= TITLE_MATCH_THRESHOLD
         ? COLOR_TITLE_TAG_GOOD
         : COLOR_TITLE_TAG
       pushChip(text, titleColor, true)

@@ -149,10 +149,6 @@ export function revertNotes(pdfId: string): void {
   })
 }
 
-export function canRevertNotes(pdfId: string): boolean {
-  return (useNotesStore.getState().notesHistoryByPdf[pdfId]?.length ?? 0) > 0
-}
-
 // Clear all notes for a PDF, pushing a snapshot first so it can be undone.
 export function resetNotes(pdfId: string): void {
   const list = useNotesStore.getState().notesByPdf[pdfId]
@@ -215,20 +211,6 @@ export function clearNotesForPdf(pdfId: string): void {
   })
 }
 
-// Drop every auto-generated note for a PDF. Used by the auto-annotate action
-// so re-running it replaces the previous batch instead of stacking duplicates.
-export function removeAutoNotesForPdf(pdfId: string): void {
-  useNotesStore.setState(state => {
-    const list = state.notesByPdf[pdfId]
-    if (!list) return state
-    const filtered = list.filter(n => !n.autoForSourceId)
-    if (filtered.length === list.length) return state
-    return {
-      notesByPdf: { ...state.notesByPdf, [pdfId]: filtered },
-    }
-  })
-}
-
 // Drop only the auto-generated notes belonging to one decision-tag category.
 // Lets the two per-category buttons re-run independently without wiping each
 // other. The shared title callout is managed separately by auto-notes.ts so
@@ -270,20 +252,6 @@ export function setActiveColor(color: string): void {
     }
     return { activeColor: color, highlightColor: color }
   })
-}
-
-export function setHighlightColor(color: string): void {
-  useNotesStore.setState(state => ({
-    highlightColor: color,
-    activeColor: state.activeKind === 'callout' ? state.activeColor : color,
-  }))
-}
-
-export function setCalloutColor(color: string): void {
-  useNotesStore.setState(state => ({
-    calloutColor: color,
-    activeColor: state.activeKind === 'callout' ? color : state.activeColor,
-  }))
 }
 
 export function setCalloutTextColor(color: string): void {

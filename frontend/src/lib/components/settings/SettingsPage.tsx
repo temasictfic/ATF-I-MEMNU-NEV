@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -8,7 +8,45 @@ import {
   DEFAULT_EXCLUSION_EDIT_URL,
 } from '../../stores/settings-store'
 import styles from './SettingsPage.module.css'
-import pkg from '../../../../../../package.json'
+import { hostAPI } from '../../host/bridge'
+
+interface NumberSettingInputProps {
+  value: number
+  min: number
+  max: number
+  className?: string
+  onCommit: (value: number) => void
+}
+
+// Number inputs commit on blur/Enter and clamp to [min, max]. Saving on every
+// keystroke via Number(value) stored 0 when the field was cleared, and ignored
+// the min/max limits.
+function NumberSettingInput({ value, min, max, className, onCommit }: NumberSettingInputProps) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const commit = () => {
+    if (draft === null) return
+    const parsed = Number(draft)
+    setDraft(null)
+    if (draft.trim() === '' || !Number.isFinite(parsed)) return
+    const clamped = Math.min(max, Math.max(min, Math.round(parsed)))
+    if (clamped !== value) onCommit(clamped)
+  }
+  return (
+    <input
+      type="number"
+      className={className}
+      value={draft ?? String(value)}
+      min={min}
+      max={max}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') commit()
+        if (e.key === 'Escape') setDraft(null)
+      }}
+    />
+  )
+}
 
 interface SecretInputProps {
   value: string
@@ -111,7 +149,6 @@ export default function SettingsPage() {
     connectOpenaire,
     disconnectOpenaire,
     reloadExclusionList,
-    resetExclusionDefaults,
   } = useSettingsStore.getState()
   const [cacheOpenMessage, setCacheOpenMessage] = useState<string | null>(null)
   const [scholarSessionMessage, setScholarSessionMessage] = useState<string | null>(null)
@@ -122,6 +159,7 @@ export default function SettingsPage() {
   const [dragDbId, setDragDbId] = useState<string | null>(null)
   const [dragOverDbId, setDragOverDbId] = useState<string | null>(null)
   const [exclusionMessage, setExclusionMessage] = useState<string | null>(null)
+  const exclusionMessageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [exclusionModalOpen, setExclusionModalOpen] = useState(false)
   const [modalListUrl, setModalListUrl] = useState('')
   const [modalEditUrl, setModalEditUrl] = useState('')
@@ -136,12 +174,18 @@ export default function SettingsPage() {
     if (!token) return
     setOpenaireBusy(true)
     setOpenaireError(null)
-    const res = await connectOpenaire(token)
-    setOpenaireBusy(false)
-    if (res.ok) {
-      setOpenaireTokenInput('')
-    } else {
-      setOpenaireError(res.error ?? t('settings.openaire.validationError'))
+    try {
+      const res = await connectOpenaire(token)
+      if (res.ok) {
+        setOpenaireTokenInput('')
+      } else {
+        setOpenaireError(res.error ?? t('settings.openaire.validationError'))
+      }
+    } catch {
+      setOpenaireError(t('settings.openaire.validationError'))
+    } finally {
+      // Always re-enable the button (it stayed disabled if connect threw).
+      setOpenaireBusy(false)
     }
   }
 
@@ -168,12 +212,15 @@ export default function SettingsPage() {
     } else {
       setExclusionMessage(t('settings.exclusionList.updated'))
     }
-    setTimeout(() => setExclusionMessage(null), 3000)
+    // Clear any previous message timer so a second click's message isn't
+    // wiped early by the first click's timer.
+    if (exclusionMessageTimerRef.current) clearTimeout(exclusionMessageTimerRef.current)
+    exclusionMessageTimerRef.current = setTimeout(() => setExclusionMessage(null), 3000)
   }
 
   const handleOpenCacheFolder = async () => {
     try {
-      const result = await window.electronAPI.openCacheFolder()
+      const result = await hostAPI.openCacheFolder()
       setCacheOpenMessage(result.ok ? t('settings.cache.openedAt', { path: result.path }) : t('settings.cache.openFailed'))
       if (!result.ok && result.error) {
         console.error('Failed to open cache folder:', result.error)
@@ -188,7 +235,7 @@ export default function SettingsPage() {
     setScholarSessionBusy(true)
     setScholarSessionMessage(null)
     try {
-      await window.electronAPI.clearScholarSession()
+      await hostAPI.clearScholarSession()
       setScholarSessionMessage(t('settings.cache.scholarSessionCleared'))
     } catch (error) {
       console.error('Failed to clear Scholar session:', error)
@@ -199,12 +246,12 @@ export default function SettingsPage() {
   }
 
   const handleOpenGithubRepo = () => {
-    window.electronAPI.openExternal(GITHUB_REPO_URL).catch(err => console.error('Failed to open URL:', err))
+    hostAPI.openExternal(GITHUB_REPO_URL).catch(err => console.error('Failed to open URL:', err))
   }
 
   const handleOpenExternalLink = (url: string) => (e: React.MouseEvent) => {
     e.preventDefault()
-    window.electronAPI.openExternal(url).catch(err => console.error('Failed to open URL:', err))
+    hostAPI.openExternal(url).catch(err => console.error('Failed to open URL:', err))
   }
 
   const handleOpenExclusionModal = () => {
@@ -264,7 +311,7 @@ export default function SettingsPage() {
             )}
           </button>
           <div style={{ flex: 1 }} />
-          <span style={{ marginRight: 10, color: '#78716c', fontSize: 13, fontWeight: 700 }}>v{pkg.version}</span>
+          <span style={{ marginRight: 10, color: '#78716c', fontSize: 13, fontWeight: 700 }}>v{hostAPI.version}</span>
           <button
             type="button"
             className={styles['header-icon-button']}
@@ -498,7 +545,7 @@ export default function SettingsPage() {
                 type="button"
                 className={`${styles['action-button']} ${styles['action-button-portal']}`}
                 onClick={() =>
-                  window.electronAPI
+                  hostAPI
                     .openExternal(OPENAIRE_TOKEN_PAGE_URL)
                     .catch(err => console.error('Failed to open URL:', err))
                 }
@@ -607,7 +654,7 @@ export default function SettingsPage() {
               type="button"
               className={`${styles['action-button']} ${styles['action-button-portal']}`}
               onClick={() =>
-                window.electronAPI
+                hostAPI
                   .openExternal('https://developer.clarivate.com/')
                   .catch(err => console.error('Failed to open URL:', err))
               }
@@ -649,8 +696,8 @@ export default function SettingsPage() {
               <span className={styles['setting-label']}>{t('settings.search.timeoutLabel')}</span>
               <span className={styles['setting-desc']}>{t('settings.search.timeoutDesc')}</span>
             </div>
-            <input type="number" className={styles['setting-input']} value={settings.search_timeout}
-              onChange={e => updateSetting('search_timeout', Number(e.target.value))} min={5} max={120} />
+            <NumberSettingInput className={styles['setting-input']} value={settings.search_timeout}
+              onCommit={v => updateSetting('search_timeout', v)} min={5} max={120} />
           </div>
 
           <div className={styles['setting-row']}>
@@ -658,8 +705,8 @@ export default function SettingsPage() {
               <span className={styles['setting-label']}>{t('settings.search.maxApisLabel')}</span>
               <span className={styles['setting-desc']}>{t('settings.search.maxApisDesc')}</span>
             </div>
-            <input type="number" className={styles['setting-input']} value={settings.max_concurrent_apis}
-              onChange={e => updateSetting('max_concurrent_apis', Number(e.target.value))} min={1} max={20} />
+            <NumberSettingInput className={styles['setting-input']} value={settings.max_concurrent_apis}
+              onCommit={v => updateSetting('max_concurrent_apis', v)} min={1} max={20} />
           </div>
 
           <div className={styles['setting-row']}>
@@ -667,8 +714,8 @@ export default function SettingsPage() {
               <span className={styles['setting-label']}>{t('settings.search.concurrentSourcesLabel')}</span>
               <span className={styles['setting-desc']}>{t('settings.search.concurrentSourcesDesc')}</span>
             </div>
-            <input type="number" className={styles['setting-input']} value={settings.max_concurrent_sources_per_pdf}
-              onChange={e => updateSetting('max_concurrent_sources_per_pdf', Number(e.target.value))} min={1} max={20} />
+            <NumberSettingInput className={styles['setting-input']} value={settings.max_concurrent_sources_per_pdf}
+              onCommit={v => updateSetting('max_concurrent_sources_per_pdf', v)} min={1} max={20} />
           </div>
 
           <div className={styles['setting-row']}>
@@ -725,7 +772,7 @@ export default function SettingsPage() {
                 type="button"
                 className={styles['action-button']}
                 onClick={async () => {
-                  const dir = await window.electronAPI.selectDirectory(settings.exported_pdf_dir ?? '')
+                  const dir = await hostAPI.selectDirectory(settings.exported_pdf_dir ?? '')
                   if (dir) updateSetting('exported_pdf_dir', dir)
                 }}
               >

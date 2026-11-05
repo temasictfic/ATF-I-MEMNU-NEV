@@ -13,7 +13,6 @@ import { computeExclusion } from '../verification/exclusion'
 import { useSettingsStore } from './settings-store'
 import { useSourcesStore } from './sources-store'
 import i18n from '../i18n'
-import { usePdfStore } from './pdf-store'
 
 type CardSortKey = 'status' | 'ref' | 'enabled' | 'decision' | 'manual'
 type PdfSortKey = 'name' | 'status' | 'high' | 'medium' | 'low' | 'valid' | 'citation' | 'fabricated' | 'free'
@@ -62,7 +61,6 @@ interface VerificationState {
   toggleSourceEnabled: (sourceId: string) => void
   setAllEnabled: (pdfId: string, enabled: boolean) => void
   clearEnabledOverrides: (pdfId: string) => void
-  reorderSources: (pdfId: string, fromIndex: number, toIndex: number) => void
   reorderPdfs: (fromIndex: number, toIndex: number, baseOrder: string[]) => void
   freezePdfOrder: (baseOrder: string[]) => void
   toggleCardSort: (key: CardSortKey) => void
@@ -71,7 +69,6 @@ interface VerificationState {
   startVerification: (pdfIds: string[]) => Promise<boolean>
   startVerificationNonHighForPdf: (pdfId: string) => Promise<boolean>
   reverifySource: (pdfId: string, sourceId: string, text?: string) => Promise<boolean>
-  reverifyPdf: (pdfId: string) => Promise<void>
   overrideStatus: (pdfId: string, sourceId: string, status: 'high' | 'medium' | 'low') => Promise<void>
   toggleTag: (pdfId: string, sourceId: string, tag: 'authors' | 'year' | 'title' | 'journal' | 'doi/arXiv') => Promise<void>
   cycleDecisionTag: (pdfId: string, sourceId: string) => Promise<void>
@@ -218,57 +215,6 @@ function startPolling(pdfIds: string[], jobId: string): void {
   polling = { jobId, pdfIds, errors: 0, timer }
 }
 
-// --- Buffered verification console logging ---
-
-interface DbCheckLog {
-  database: string
-  dbStatus: DbCheckStatus
-  match: Record<string, unknown> | null
-  searchUrl: string
-}
-
-interface SourceLog {
-  sourceId: string
-  sourceText: string
-  dbChecks: DbCheckLog[]
-  finalStatus: string | null
-}
-
-interface PdfVerifyLog {
-  pdfId: string
-  sources: Map<string, SourceLog>
-}
-
-interface VerifyBatch {
-  totalSources: number
-  pdfs: Map<string, PdfVerifyLog>
-  expectedPdfCount: number
-  completedPdfs: number
-  groupOpened: boolean
-}
-
-let verifyBatch: VerifyBatch | null = null
-
-function initVerifyBatch(totalSources: number, pdfCount: number): void {
-  // Flush any leftover batch
-  if (verifyBatch?.groupOpened) {
-    console.groupEnd()
-  }
-  verifyBatch = {
-    totalSources,
-    pdfs: new Map(),
-    expectedPdfCount: pdfCount,
-    completedPdfs: 0,
-    groupOpened: false,
-  }
-}
-
-function flushPdfVerifyLog(pdfId: string): void {
-  if (!verifyBatch) return
-  const pdfLog = verifyBatch.pdfs.get(pdfId)
-  if (!pdfLog) return
-}
-
 // --- Store ---
 
 export const useVerificationStore = create<VerificationState>()((set, get) => ({
@@ -352,14 +298,6 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
       const updated = { ...state.enabledSources }
       for (const id of order) delete updated[id]
       return { enabledSources: updated }
-    }),
-
-  reorderSources: (pdfId, fromIndex, toIndex) =>
-    set(state => {
-      const order = [...(state.sourceOrder[pdfId] ?? [])]
-      const [moved] = order.splice(fromIndex, 1)
-      order.splice(toIndex, 0, moved)
-      return { sourceOrder: { ...state.sourceOrder, [pdfId]: order } }
     }),
 
   reorderPdfs: (fromIndex, toIndex, baseOrder) =>
@@ -535,7 +473,6 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
       }
 
       // Initialize verify log batch
-      initVerifyBatch(totalEnabled, pdfIds.length)
 
       // Sentinel job_id installed synchronously *before* the API call so any
       // late events from a superseded run can't sneak through the WS-handler
@@ -718,7 +655,6 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
       const excludedIds = sourceIds.filter(sourceId => !includeSet.has(sourceId))
 
       // Initialize verify log batch for this targeted run.
-      initVerifyBatch(includeIds.length, 1)
 
       // Sentinel job_id installed before the API call — see startVerification
       // for the rationale. Replaced with the real job_id after the response.
@@ -730,7 +666,7 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
         const pdfPriorSnapshot = { ...(state.priorResultsByPdf[pdfId] ?? {}) }
         // Clear the cancelled-flag for sources we're about to re-run so late
         // events from the *previous* run no longer suppress this new run's
-        // WS updates. Mirrors startVerification / reverifySource / reverifyPdf.
+        // WS updates. Mirrors startVerification / reverifySource.
         const nextCancelled = new Set(state.cancelledSourceIds)
         const newJobIdBySource = { ...state.activeJobIdBySource }
 
@@ -856,7 +792,6 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
     })()
     try {
       // Init a mini batch for single verify logging
-      initVerifyBatch(1, 1)
 
       // Sentinel job_id installed before the API call so a late
       // verify_source_done from a just-cancelled prior run (which carries
@@ -907,7 +842,11 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
           activeJobIdBySource: { ...state.activeJobIdBySource, [sourceId]: pendingJobId },
         }
       })
-      const response = await api.verifySource(pdfId, sourceId, sanitizeSourceText(text ?? ''))
+      // Only send text the user actually edited. `undefined` used to become
+      // "" here, and the backend then verified an empty string instead of
+      // the stored source text.
+      const edited = text !== undefined ? sanitizeSourceText(text) : ''
+      const response = await api.verifySource(pdfId, sourceId, edited.trim() ? edited : undefined)
 
       // Replace sentinel with real job_id, but only if our sentinel is still
       // there — a concurrent action may have already moved on.
@@ -924,39 +863,6 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
       console.error('Failed to verify source:', e)
       set(rollback)
       return false
-    }
-  },
-
-  reverifyPdf: async (pdfId) => {
-    try {
-      const pendingJobId = `pending-${Math.random().toString(36).slice(2)}`
-      const trackedSources: string[] = []
-      set(state => {
-        const nextCancelled = new Set(state.cancelledSourceIds)
-        const newJobIdBySource = { ...state.activeJobIdBySource }
-        for (const sourceId of state.sourceOrder[pdfId] ?? []) {
-          nextCancelled.delete(sourceId)
-          newJobIdBySource[sourceId] = pendingJobId
-          trackedSources.push(sourceId)
-        }
-        return {
-          cancelledSourceIds: nextCancelled,
-          activeJobIdBySource: newJobIdBySource,
-          activeJobIdByPdf: { ...state.activeJobIdByPdf, [pdfId]: pendingJobId },
-        }
-      })
-      const response = await api.verifyPdf(pdfId)
-      set(state => {
-        const bySource = { ...state.activeJobIdBySource }
-        const byPdf = { ...state.activeJobIdByPdf }
-        for (const id of trackedSources) {
-          if (bySource[id] === pendingJobId) bySource[id] = response.job_id
-        }
-        if (byPdf[pdfId] === pendingJobId) byPdf[pdfId] = response.job_id
-        return { activeJobIdBySource: bySource, activeJobIdByPdf: byPdf }
-      })
-    } catch (e) {
-      console.error('Failed to verify PDF:', e)
     }
   },
 
@@ -1151,8 +1057,6 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
         priorResultsByPdf: newPriorResults,
       }
     })
-    if (verifyBatch?.groupOpened) console.groupEnd()
-    verifyBatch = null
     try { await api.cancelVerification() } catch (e) { console.error('Failed to cancel:', e) }
   },
 
@@ -1350,22 +1254,6 @@ export function initVerificationListeners(): () => void {
         return
       }
 
-      // Buffer logging
-      if (verifyBatch) {
-        if (!verifyBatch.groupOpened) {
-          console.groupCollapsed(`%c[Verify] ${verifyBatch.totalSources}`, 'color: #60a5fa; font-weight: bold')
-          verifyBatch.groupOpened = true
-        }
-        if (!verifyBatch.pdfs.has(pdfId)) {
-          verifyBatch.pdfs.set(pdfId, { pdfId, sources: new Map() })
-        }
-        verifyBatch.pdfs.get(pdfId)!.sources.set(sourceId, {
-          sourceId,
-          sourceText: (data.source_text as string) ?? '',
-          dbChecks: [],
-          finalStatus: null,
-        })
-      }
 
       useVerificationStore.setState(state => {
         const prev = state.resultsByPdf[pdfId]?.[sourceId]
@@ -1435,21 +1323,6 @@ export function initVerificationListeners(): () => void {
         return
       }
 
-      // Buffer logging
-      if (verifyBatch) {
-        const pdfLog = verifyBatch.pdfs.get(pdfId)
-        const sourceLog = pdfLog?.sources.get(sourceId)
-        if (sourceLog) {
-          sourceLog.dbChecks.push({
-            database: dbName,
-            dbStatus,
-            match: (data.match as Record<string, unknown>) ?? null,
-            searchUrl: (data.search_url as string | undefined)
-              ?? ((data.match as Record<string, unknown> | undefined)?.search_url as string | undefined)
-              ?? '',
-          })
-        }
-      }
 
       useVerificationStore.setState(state => {
         const prev = state.resultsByPdf[pdfId]?.[sourceId]
@@ -1491,7 +1364,6 @@ export function initVerificationListeners(): () => void {
     wsClient.on('verify_source_done', (data) => {
       const pdfId = data.pdf_id as string
       const sourceId = data.source_id as string
-      const status = data.status as string
 
       // Drop late events from a superseded run (cancel-then-reverify race).
       // Events without a `job_id` (manual override / score_scholar) skip
@@ -1503,7 +1375,7 @@ export function initVerificationListeners(): () => void {
       // verify_source_done from _finalize_result carries a partial-pass
       // scoring (typically low/fabricated) that is strictly worse, so ignore
       // it. Resolve the in-progress dot and bail. Don't remove sourceId from
-      // cancelledSourceIds — startVerification / reverifySource / reverifyPdf
+      // cancelledSourceIds — startVerification / reverifySource
       // clear it themselves on the next run, and leaving it set means
       // subsequent late events for this run also drop.
       if (useVerificationStore.getState().cancelledSourceIds.has(sourceId)) {
@@ -1519,14 +1391,6 @@ export function initVerificationListeners(): () => void {
         return
       }
 
-      // Buffer logging
-      if (verifyBatch) {
-        const pdfLog = verifyBatch.pdfs.get(pdfId)
-        const sourceLog = pdfLog?.sources.get(sourceId)
-        if (sourceLog) {
-          sourceLog.finalStatus = status
-        }
-      }
 
       useVerificationStore.setState(state => {
         const existing = state.resultsByPdf[pdfId] ?? {}
@@ -1677,15 +1541,6 @@ export function initVerificationListeners(): () => void {
         if (allReconciled) stopPolling()
       }
 
-      // Flush buffered log for this PDF
-      if (verifyBatch) {
-        flushPdfVerifyLog(pdfId)
-        verifyBatch.completedPdfs++
-        if (verifyBatch.completedPdfs >= verifyBatch.expectedPdfCount) {
-          if (verifyBatch.groupOpened) console.groupEnd() // close [Verify] group
-          verifyBatch = null
-        }
-      }
     }),
 
     wsClient.on('verify_pdf_updated', (data) => {
@@ -1710,15 +1565,6 @@ export function initVerificationListeners(): () => void {
         }
       })
 
-      // For verify (single source), also flush
-      if (verifyBatch) {
-        flushPdfVerifyLog(pdfId)
-        verifyBatch.completedPdfs++
-        if (verifyBatch.completedPdfs >= verifyBatch.expectedPdfCount) {
-          if (verifyBatch.groupOpened) console.groupEnd()
-          verifyBatch = null
-        }
-      }
     }),
   ]
 

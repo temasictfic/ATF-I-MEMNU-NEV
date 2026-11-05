@@ -1,4 +1,4 @@
-// Centralized timing constants. Renderer-side only (Electron main has its
+// Centralized timing constants for the UI (the Python host has its
 // own timings). Update here, not at the call site, when tuning.
 
 // Verification poll interval (verify_status REST poll, while a job is running).

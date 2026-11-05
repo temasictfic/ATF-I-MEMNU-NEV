@@ -1,7 +1,7 @@
 /**
  * Google Scholar automated scanner.
  *
- * Uses a hidden Electron <webview> to sequentially search Google Scholar
+ * Uses a hidden <atfi-webview> (native WebView2) to sequentially search Google Scholar
  * for non-High sources, extract results from the DOM, and send them
  * to the backend for scoring.
  */
@@ -308,6 +308,11 @@ export class ScholarScanner {
   // forward, a newer call (or a cancellation) owns the webview now, so the
   // stale closure must not execute JS against it or resolve/reject.
   private loadGeneration = 0
+  // Bumped by startScan() and cancel(). Each processNext() loop captures it
+  // and exits as soon as it changes. Without this, a cancelled loop still
+  // sleeping in waitForSlot() woke up after a restart (startScan resets
+  // cancelRequested) and processed the *new* queue alongside the new loop.
+  private scanGeneration = 0
 
   setWebview(webview: any): void {
     this.webview = webview
@@ -332,14 +337,16 @@ export class ScholarScanner {
     this.currentIndex = 0
     this.foundCount = 0
     this.cancelRequested = false
+    const gen = ++this.scanGeneration
     this.rateLimiter.reset()
     this.setStatus('scanning')
     this.callbacks?.onProgress(0, queue.length, 0)
-    await this.processNext()
+    await this.processNext(gen)
   }
 
   cancel(): void {
     this.cancelRequested = true
+    this.scanGeneration++
     // Bump the generation so any in-flight loadAndExtract closure sees
     // `isStale() === true` on its next await and bails without touching
     // the webview or resolving its promise.
@@ -363,6 +370,8 @@ export class ScholarScanner {
 
     // Prevent re-entry
     this.setStatus('scanning')
+    const gen = this.scanGeneration
+    const superseded = (): boolean => this.cancelRequested || gen !== this.scanGeneration
 
     // Try to extract results from the overlay webview (user solved CAPTCHA there).
     // `null` means "extraction unavailable" (overlay missing/closed/threw/wrong
@@ -401,7 +410,7 @@ export class ScholarScanner {
       console.log('[Scholar] Overlay extraction unavailable; retrying via hidden webview')
       try {
         const result = await this.loadAndExtract(url)
-        if (this.cancelRequested) return
+        if (superseded()) return
         if (result === 'captcha') {
           // Hit another CAPTCHA — re-enter captcha state without advancing.
           this.rateLimiter.onCaptcha()
@@ -415,6 +424,8 @@ export class ScholarScanner {
         candidates = []
       }
     }
+
+    if (superseded()) return
 
     // Always score, even with an empty candidate list, so the backend records
     // "Google Scholar" in databases_searched and the UI gets its GS link.
@@ -439,7 +450,7 @@ export class ScholarScanner {
     this.callbacks?.onProgress(this.currentIndex, this.queue.length, this.foundCount)
 
     console.log(`[Scholar] Continuing to next (${this.currentIndex}/${this.queue.length})`)
-    await this.processNext()
+    await this.processNext(gen)
   }
 
   private setStatus(status: ScholarScanStatus): void {
@@ -447,7 +458,8 @@ export class ScholarScanner {
     this.callbacks?.onStatusChange(status)
   }
 
-  private async processNext(): Promise<void> {
+  private async processNext(gen: number): Promise<void> {
+    const superseded = (): boolean => this.cancelRequested || gen !== this.scanGeneration
     // One rate-limit slot is "pre-reserved" by the previous iteration during
     // its scoring POST, so the wait runs concurrently with the backend call
     // instead of serially after it. null means "no pre-reserved slot, call
@@ -455,7 +467,7 @@ export class ScholarScanner {
     // after a CAPTCHA (where the pre-reserved slot was never created).
     let nextSlotWait: Promise<void> | null = null
 
-    while (!this.cancelRequested && this.currentIndex < this.queue.length) {
+    while (!superseded() && this.currentIndex < this.queue.length) {
       const item = this.queue[this.currentIndex]
 
       if (nextSlotWait !== null) {
@@ -464,7 +476,7 @@ export class ScholarScanner {
       } else {
         await this.rateLimiter.waitForSlot()
       }
-      if (this.cancelRequested) return
+      if (superseded()) return
 
       const url = buildSearchUrl(item.searchText)
       console.log(`[Scholar] Searching: ${url.substring(0, 120)}...`)
@@ -473,11 +485,16 @@ export class ScholarScanner {
       try {
         candidates = await this.loadAndExtract(url)
       } catch (err) {
+        if (superseded()) return
         this.callbacks?.onError(item.sourceId, `${err}`)
         this.currentIndex++
         this.callbacks?.onProgress(this.currentIndex, this.queue.length, this.foundCount)
         continue
       }
+
+      // A cancelled/stale load resolves []; scoring it would still mark
+      // "Google Scholar" as searched for this source.
+      if (superseded()) return
 
       if (candidates === 'captcha') {
         console.log('[Scholar] Got CAPTCHA')
@@ -537,7 +554,7 @@ export class ScholarScanner {
           return null
         })
 
-      if (this.currentIndex + 1 < this.queue.length && !this.cancelRequested) {
+      if (this.currentIndex + 1 < this.queue.length && !superseded()) {
         nextSlotWait = this.rateLimiter.waitForSlot()
       }
 
@@ -550,7 +567,7 @@ export class ScholarScanner {
       this.callbacks?.onProgress(this.currentIndex, this.queue.length, this.foundCount)
     }
 
-    if (!this.cancelRequested) this.setStatus('done')
+    if (!superseded()) this.setStatus('done')
   }
 
   // Fetch APA citation for one cid via a short same-origin request inside
@@ -606,6 +623,9 @@ export class ScholarScanner {
 
       const onFailed = (e: any): void => {
         if (settled) return
+        // Sub-frame failures (ads, trackers) and ERR_ABORTED (-3, a superseded
+        // navigation) don't mean the results page failed to load.
+        if (e?.isMainFrame === false || e?.errorCode === -3) return
         settled = true
         clearTimeout(timeoutId)
         cleanup()
@@ -667,10 +687,14 @@ export class ScholarScanner {
       view.addEventListener('did-stop-loading', onLoaded)
       view.addEventListener('did-fail-load', onFailed)
 
-      // Navigate by setting src attribute (works reliably with Electron webview)
       try {
         if (typeof view.loadURL === 'function') {
-          view.loadURL(url)
+          // loadURL's promise rejects when a navigation is superseded; real
+          // failures arrive through did-fail-load, so the rejection itself
+          // is only logged (it used to be an unhandled rejection).
+          Promise.resolve(view.loadURL(url)).catch((err: unknown) => {
+            console.debug('[Scholar] loadURL rejected:', err)
+          })
         } else {
           view.src = url
         }

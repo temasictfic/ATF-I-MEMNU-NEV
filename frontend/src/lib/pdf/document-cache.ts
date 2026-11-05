@@ -16,6 +16,7 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist/types/src/display/api'
 import { getPdfjs } from './pdfjs-setup'
 import { SCALE } from './types'
+import { hostAPI } from '../host/bridge'
 
 export interface PdfDocumentEntry {
   doc: PDFDocumentProxy
@@ -79,7 +80,7 @@ export async function getOrLoadDocument(localPath: string): Promise<PdfDocumentE
 
   const promise = (async (): Promise<PdfDocumentEntry> => {
     try {
-      const bytes = await window.electronAPI.readPdfFile(localPath)
+      const bytes = await hostAPI.readPdfFile(localPath)
       const pdfjsLib = getPdfjs()
       const doc = await pdfjsLib.getDocument({ data: bytes }).promise
 
@@ -134,18 +135,4 @@ export function evictDocument(localPath: string): void {
   if (!entry) return
   cache.delete(localPath)
   destroyEntry(entry, 'manual evict')
-}
-
-/**
- * Destroy and clear every cached document. Call when the entire PDF list
- * is reset (e.g. user loads a new directory).
- */
-export function clearDocumentCache(): void {
-  for (const entry of cache.values()) {
-    entry.doc.loadingTask.destroy().catch(() => {
-      // best-effort cleanup
-    })
-  }
-  cache.clear()
-  pending.clear()
 }
