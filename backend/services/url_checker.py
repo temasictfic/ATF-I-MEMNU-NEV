@@ -14,9 +14,13 @@ redirect target is re-validated; the redirect chain is capped.
 import asyncio
 import ipaddress
 import logging
+import socket
+import urllib.request
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
+from aiohttp.abc import AbstractResolver, ResolveResult
+from aiohttp.resolver import DefaultResolver
 from verifiers._http import build_headers, create_ssl_context
 
 logger = logging.getLogger(__name__)
@@ -48,6 +52,65 @@ def is_doi_or_arxiv_url(url: str) -> bool:
     return "doi.org" in lower or "arxiv.org" in lower
 
 
+def _ip_is_public(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return not (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+class _PublicOnlyResolver(AbstractResolver):
+    """Resolver that drops non-public addresses at *connect* time.
+
+    `_is_url_safe` checks a hostname before each request, but the HTTP client
+    resolved the name again when connecting, so a hostile DNS server could
+    answer with a public IP for the check and 127.0.0.1 / 10.x for the
+    connection (DNS rebinding). Filtering here means the address actually
+    connected to is the one that was validated.
+
+    Configured proxy hosts are exempt: with a proxy, the client only connects
+    to the proxy (often on a private address) and the proxy resolves the target.
+    """
+
+    def __init__(self, exempt_hosts: set[str]) -> None:
+        self._inner = DefaultResolver()
+        self._exempt = {h.lower() for h in exempt_hosts}
+
+    async def resolve(
+        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
+    ) -> list[ResolveResult]:
+        infos = await self._inner.resolve(host, port, family)
+        if host.lower() in self._exempt:
+            return infos
+        public = [info for info in infos if _ip_is_public(info["host"])]
+        if not public:
+            raise OSError(f"{host} resolves only to non-public addresses")
+        return public
+
+    async def close(self) -> None:
+        await self._inner.close()
+
+
+def _proxy_hosts() -> set[str]:
+    hosts: set[str] = set()
+    for value in urllib.request.getproxies().values():
+        try:
+            host = urlparse(value if "://" in value else f"http://{value}").hostname
+        except ValueError:
+            continue
+        if host:
+            hosts.add(host)
+    return hosts
+
+
 async def _is_url_safe(url: str) -> bool:
     """SSRF guard. Reject anything that isn't an http(s) URL on a normal port,
     or that resolves to a non-routable / private / loopback / link-local /
@@ -73,21 +136,7 @@ async def _is_url_safe(url: str) -> bool:
         return False
     for info in infos:
         sockaddr = info[4]
-        if not sockaddr:
-            return False
-        ip_str = sockaddr[0]
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            return False
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
+        if not sockaddr or not _ip_is_public(sockaddr[0]):
             return False
     return True
 
@@ -163,7 +212,9 @@ async def check_urls(urls: list[str], timeout: float = 10.0) -> dict[str, bool]:
         return {}
 
     client_timeout = aiohttp.ClientTimeout(total=timeout)
-    connector = aiohttp.TCPConnector(ssl=create_ssl_context())
+    connector = aiohttp.TCPConnector(
+        ssl=create_ssl_context(), resolver=_PublicOnlyResolver(_proxy_hosts())
+    )
     async with aiohttp.ClientSession(
         timeout=client_timeout, headers=_build_headers(), connector=connector, trust_env=True
     ) as session:

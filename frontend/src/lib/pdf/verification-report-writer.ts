@@ -163,7 +163,12 @@ function effectiveDecision(src: ReportSource): 'valid' | 'citation' | 'fabricate
 function wrapText(text: string, font: PDFFont, sz: number, maxW: number): string[] {
   const lines: string[] = []
   for (const para of text.split('\n')) {
-    const words = para.split(/\s+/).filter(Boolean)
+    // A token wider than the column (long URL or DOI) is hard-broken first;
+    // it used to run past the page margin.
+    const words = para
+      .split(/\s+/)
+      .filter(Boolean)
+      .flatMap(w => breakLongToken(w, font, sz, maxW))
     if (!words.length) { lines.push(''); continue }
     let cur = words[0]
     for (let i = 1; i < words.length; i++) {
@@ -174,6 +179,27 @@ function wrapText(text: string, font: PDFFont, sz: number, maxW: number): string
     lines.push(cur)
   }
   return lines
+}
+
+// Split a token that doesn't fit into pieces that do, preferring to break
+// after URL/DOI separators so the pieces stay readable.
+function breakLongToken(token: string, font: PDFFont, sz: number, maxW: number): string[] {
+  if (font.widthOfTextAtSize(token, sz) <= maxW) return [token]
+  const pieces: string[] = []
+  let rest = token
+  while (rest && font.widthOfTextAtSize(rest, sz) > maxW) {
+    // Longest prefix that fits (at least one character).
+    let fit = 1
+    while (fit < rest.length && font.widthOfTextAtSize(rest.slice(0, fit + 1), sz) <= maxW) fit++
+    // Back off to just after the last separator in that prefix, if any.
+    const window = rest.slice(0, fit)
+    const sep = Math.max(...['/', '.', '-', '_', '?', '&', '=', '#', ':'].map(c => window.lastIndexOf(c)))
+    const cut = sep > fit / 3 ? sep + 1 : fit
+    pieces.push(rest.slice(0, cut))
+    rest = rest.slice(cut)
+  }
+  if (rest) pieces.push(rest)
+  return pieces
 }
 
 /** Truncate a single-line string with an ellipsis so it fits within maxW. */

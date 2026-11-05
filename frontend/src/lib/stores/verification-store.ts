@@ -86,30 +86,71 @@ interface PollingState {
   jobId: string
   pdfIds: string[]
   errors: number
-  timer: ReturnType<typeof setInterval>
+  timer: ReturnType<typeof setTimeout> | null
+  busy: boolean
 }
 
-const MAX_POLLING_CONSECUTIVE_ERRORS = 3
+// REST polling is the fallback for missed WebSocket events. It used to tick
+// every 5 s even while the WebSocket was healthy, ticks could overlap, and
+// it stopped for good after 3 errors, so a WS drop during a backend hiccup
+// left cards "in progress" until the PDF was reopened. Now:
+//   - 5 s while the WebSocket is down, 30 s as a safety net while it's up;
+//   - errors back off (up to 60 s) but never stop polling;
+//   - a WebSocket reconnect triggers an immediate re-sync;
+//   - ticks are chained with setTimeout, so they never overlap.
+const SAFETY_POLL_INTERVAL_MS = 30_000
+const MAX_POLL_BACKOFF_MS = 60_000
+let wsConnected = false
 
 // At most one polling job is in flight at a time. startPolling clears the
-// previous state before starting a new tick, so the three pieces (jobId,
-// pdfIds, errors, timer) can never disagree about which job is being polled.
+// previous state before starting a new tick, so the pieces (jobId, pdfIds,
+// errors, timer) can never disagree about which job is being polled.
 let polling: PollingState | null = null
 
 function stopPolling(): void {
   if (polling) {
-    clearInterval(polling.timer)
+    if (polling.timer) clearTimeout(polling.timer)
     polling = null
   }
 }
 
+function nextPollDelay(current: PollingState): number {
+  if (current.errors > 0) {
+    return Math.min(POLL_INTERVAL_MS * 2 ** current.errors, MAX_POLL_BACKOFF_MS)
+  }
+  return wsConnected ? SAFETY_POLL_INTERVAL_MS : POLL_INTERVAL_MS
+}
+
+function schedulePoll(current: PollingState, delayMs: number): void {
+  if (polling !== current) return
+  if (current.timer) clearTimeout(current.timer)
+  current.timer = setTimeout(() => void runPollTick(current), delayMs)
+}
+
+async function runPollTick(current: PollingState): Promise<void> {
+  if (polling !== current || current.busy) return
+  current.busy = true
+  try {
+    await pollTick(current)
+  } finally {
+    current.busy = false
+  }
+  if (polling === current) schedulePoll(current, nextPollDelay(current))
+}
+
+/** Re-sync now (e.g. right after the WebSocket reconnects). */
+function pollNow(): void {
+  if (polling) schedulePoll(polling, 0)
+}
+
 function startPolling(pdfIds: string[], jobId: string): void {
   stopPolling()
+  const current: PollingState = { jobId, pdfIds, errors: 0, timer: null, busy: false }
+  polling = current
+  schedulePoll(current, POLL_INTERVAL_MS)
+}
 
-  const timer = setInterval(async () => {
-    const current = polling
-    // Skip if polling was stopped between ticks
-    if (!current) return
+async function pollTick(current: PollingState): Promise<void> {
     try {
       // Check local state first — WS events may have already completed everything
       const localState = useVerificationStore.getState()
@@ -203,20 +244,10 @@ function startPolling(pdfIds: string[], jobId: string): void {
     } catch (e) {
       if (polling !== current) return
       current.errors++
-      console.error(
-        `[Poll] Polling error (${current.errors}/${MAX_POLLING_CONSECUTIVE_ERRORS}):`,
-        e,
-      )
-      // Backend is probably down (restart, crash, network hiccup). Don't
-      // spin forever hammering a dead endpoint — stop after a few failures.
-      if (current.errors >= MAX_POLLING_CONSECUTIVE_ERRORS) {
-        console.warn('[Poll] Too many consecutive errors, stopping poll loop')
-        if (polling === current) stopPolling()
-      }
+      // Backend unreachable (restart, hiccup): back off, but keep going so
+      // the run's results are reconciled once it is back.
+      console.warn(`[Poll] Polling error #${current.errors}, retrying with backoff:`, e)
     }
-  }, POLL_INTERVAL_MS)
-
-  polling = { jobId, pdfIds, errors: 0, timer }
 }
 
 // --- Store ---
@@ -1253,6 +1284,17 @@ function isStalePdfEvent(data: Record<string, unknown>, pdfId: string): boolean 
 
 export function initVerificationListeners(): () => void {
   const unsubs = [
+    // Track WebSocket health for the polling cadence, and re-sync right after
+    // a reconnect: events sent while it was down are lost.
+    wsClient.on('ws:connected', () => {
+      wsConnected = true
+      pollNow()
+    }),
+    wsClient.on('ws:disconnected', () => {
+      wsConnected = false
+      if (polling) schedulePoll(polling, POLL_INTERVAL_MS)
+    }),
+
     wsClient.on('verify_started', (data) => {
       const sourceId = data.source_id as string
       const pdfId = data.pdf_id as string

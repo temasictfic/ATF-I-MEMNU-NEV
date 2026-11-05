@@ -262,3 +262,31 @@ def test_extract_fields_cleans_once() -> None:
     clean = strip_source_noise("[12] 3-D printing in medicine. Lancet (2020).")
     parsed = _extract_source_fields_regex(clean, already_clean=True)
     assert parsed.raw_text.startswith("3-D")
+
+
+# --- item 12: DNS rebinding is blocked at connect time ---------------------------
+
+
+def test_resolver_drops_private_addresses(monkeypatch) -> None:
+    from services import url_checker
+
+    async def fake_inner_resolve(self, host, port=0, family=0):
+        table = {
+            "rebind.example": [{"host": "127.0.0.1"}, {"host": "10.0.0.5"}],
+            "mixed.example": [{"host": "10.0.0.5"}, {"host": "93.184.216.34"}],
+            "proxy.corp": [{"host": "10.1.2.3"}],
+        }
+        return [dict(r, hostname=host, port=port, family=family, proto=0, flags=0) for r in table[host]]
+
+    monkeypatch.setattr(url_checker.DefaultResolver, "resolve", fake_inner_resolve)
+
+    async def scenario():
+        r = url_checker._PublicOnlyResolver({"proxy.corp"})
+        with pytest.raises(OSError):
+            await r.resolve("rebind.example", 80)
+        mixed = await r.resolve("mixed.example", 80)
+        proxy = await r.resolve("proxy.corp", 3128)  # configured proxy stays reachable
+        await r.close()
+        return [i["host"] for i in mixed], [i["host"] for i in proxy]
+
+    assert asyncio.run(scenario()) == (["93.184.216.34"], ["10.1.2.3"])

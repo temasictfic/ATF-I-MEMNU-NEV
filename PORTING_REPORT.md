@@ -161,9 +161,13 @@ These change behaviour or need a bigger refactor, so they were left alone.
 8. **Settings store overwrites in-flight edits.** Autosave and DB-op responses replace the whole `settings` object, so characters typed while a request is in flight can be lost. Concurrent DB toggles can also resolve out of order.
    - ✅ **Fixed:** server echoes are merged instead of replacing settings. Fields edited after the request was sent are kept (API keys per key, except the server-managed OpenAIRE token), and only the newest database operation's response is applied.
 9. **PDF annotation coordinates** ignore a non-zero MediaBox origin and `/Rotate` (`frontend/src/lib/pdf/annotation-writer.ts`). **Report writer:** `wrapText` never hard-breaks long URLs or DOIs, so they overflow.
+   - ✅ **Fixed:** annotations go through `page-frame.ts`, the exact inverse of pdf.js's viewport (box origin, CropBox, /Rotate). Callout text is drawn upright on rotated pages. This is unit-tested against pdf.js on six page setups (`npm test`). Report tokens wider than the column are hard-broken, preferring URL/DOI separators.
 10. **Source detection:** the loose header regex matches substrings ("Resources", "Kaynakları"), so an early body-text line can win over the real KAYNAKLAR header.
+   - ✔️ **Decided:** left as is.
 11. **Polling** stops permanently after 3 errors and isn't resumed after a WebSocket reconnect, so cards can stay `in_progress`. Polling runs every 5 s even while the WebSocket is healthy.
+   - ✅ **Fixed:** polling runs every 5 s only while the WebSocket is down and every 30 s as a safety net otherwise. Errors back off up to 60 s and never stop polling, a reconnect re-syncs immediately, and ticks no longer overlap. Measured: 2 polls instead of about 8 during a 40 s run.
 12. **URL checker:** the SSRF guard resolves DNS itself, and aiohttp resolves again when it connects (DNS-rebinding race).
+   - ✅ **Fixed:** a connect-time resolver drops non-public addresses, so the address used is the one validated. Configured proxy hosts are exempt.
 13. **Notes stay after a PDF is removed** and reappear on re-import (`clearNotesForPdf` exists but isn't called). This may be intentional.
 14. **`GET /settings/openaire/status`** exists so the UI can show silent OpenAIRE auth failures, but nothing displays it.
 15. **Settings modal:** pressing Enter on *any* button applies the values.

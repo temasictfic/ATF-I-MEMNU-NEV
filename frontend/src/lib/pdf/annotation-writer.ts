@@ -19,12 +19,16 @@
 //   - Notes are stored in PIXEL coordinates at SCALE = 150/72 with a top-left
 //     origin (matching the rest of the app — SourceRectangle bboxes use the
 //     same space).
-//   - PDF user space has a bottom-left origin and uses points. To convert,
-//     divide pixels by SCALE and flip y via `page_height_pt - y`.
+//   - PDF user space has a bottom-left origin and uses points. Conversion goes
+//     through `makePageFrame` (page-frame.ts), the exact inverse of pdf.js's
+//     viewport, so pages with a /Rotate or a MediaBox/CropBox that doesn't
+//     start at (0, 0) are handled. The old `page_height_pt - y` flip misplaced
+//     notes on those pages.
 
 import {
   PDFDocument,
   PDFName,
+  degrees,
   rgb,
   type PDFFont,
   type RGB,
@@ -34,6 +38,7 @@ import type { Note, NoteQuad } from '../stores/notes-store'
 import { DEFAULT_CALLOUT_FONT_SIZE, DEFAULT_CALLOUT_OPACITY } from '../stores/notes-store'
 import { SCALE } from './types'
 import { getLiberationFontBytes } from './fonts'
+import { makePageFrame, visibleBox, type PageFrame } from './page-frame'
 
 function hexToRgb(hex: string): RGB {
   const clean = hex.replace('#', '').trim()
@@ -61,16 +66,37 @@ interface PdfRect {
   y1: number
 }
 
-// Convert a pixel-space quad (top-left origin, SCALE pixels) into a PDF-space
-// rect (bottom-left origin, points).
-function pixelQuadToPdfRect(quad: NoteQuad, pageHeightPt: number): PdfRect {
-  const x0 = quad.x0 / SCALE
-  const x1 = quad.x1 / SCALE
-  // Flip Y: pixel top edge (smallest y in top-left space) becomes the PDF top
-  // edge (largest y in bottom-left space).
-  const yTop = pageHeightPt - quad.y0 / SCALE
-  const yBottom = pageHeightPt - quad.y1 / SCALE
-  return { x0, y0: Math.min(yTop, yBottom), x1, y1: Math.max(yTop, yBottom) }
+// The four corners of a pixel-space quad (as the viewer sees it: top-left,
+// top-right, bottom-left, bottom-right) in PDF user space.
+function quadCorners(quad: NoteQuad, frame: PageFrame) {
+  const xl = Math.min(quad.x0, quad.x1)
+  const xr = Math.max(quad.x0, quad.x1)
+  const yt = Math.min(quad.y0, quad.y1)
+  const yb = Math.max(quad.y0, quad.y1)
+  return {
+    tl: frame.toPdf(xl, yt),
+    tr: frame.toPdf(xr, yt),
+    bl: frame.toPdf(xl, yb),
+    br: frame.toPdf(xr, yb),
+  }
+}
+
+// Axis-aligned PDF-space rect covering a pixel-space quad.
+function pixelQuadToPdfRect(quad: NoteQuad, frame: PageFrame): PdfRect {
+  const { tl, tr, bl, br } = quadCorners(quad, frame)
+  const xs = [tl.x, tr.x, bl.x, br.x]
+  const ys = [tl.y, tr.y, bl.y, br.y]
+  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) }
+}
+
+function frameForPage(page: PDFPage): PageFrame {
+  const media = page.getMediaBox()
+  const crop = page.getCropBox()
+  const view = visibleBox(
+    { x0: media.x, y0: media.y, x1: media.x + media.width, y1: media.y + media.height },
+    { x0: crop.x, y0: crop.y, x1: crop.x + crop.width, y1: crop.y + crop.height },
+  )
+  return makePageFrame(view, page.getRotation().angle, SCALE)
 }
 
 /**
@@ -109,13 +135,13 @@ export async function writeNotesToPdf(
   for (const [pageNum, pageNotes] of notesByPage) {
     if (pageNum < 0 || pageNum >= pages.length) continue
     const page = pages[pageNum]
-    const { height: pageHeightPt } = page.getSize()
+    const frame = frameForPage(page)
 
     // Highlights: build annotation dict refs and append to the page /Annots.
     const highlightRefs: ReturnType<typeof context.register>[] = []
     for (const note of pageNotes) {
       if (note.kind !== 'highlight') continue
-      highlightRefs.push(buildHighlightAnnotation(context, note, pageHeightPt))
+      highlightRefs.push(buildHighlightAnnotation(context, note, frame))
     }
     if (highlightRefs.length > 0) {
       const existing = page.node.Annots()
@@ -129,7 +155,7 @@ export async function writeNotesToPdf(
     // Callouts: draw straight into the page content stream.
     for (const note of pageNotes) {
       if (note.kind !== 'callout') continue
-      drawCalloutOnPage(page, note, pageHeightPt, helvetica, helveticaBold)
+      drawCalloutOnPage(page, note, frame, helvetica, helveticaBold)
     }
   }
 
@@ -142,14 +168,15 @@ function clampOpacity(opacity: number): number {
 }
 
 type PDFContext = PDFDocument['context']
+type PDFPage = ReturnType<PDFDocument['getPages']>[number]
 
 function buildHighlightAnnotation(
   context: PDFContext,
   note: Note,
-  pageHeightPt: number
+  frame: PageFrame
 ) {
   const quads = note.quads && note.quads.length > 0 ? note.quads : [note.bbox]
-  const pdfRects = quads.map(q => pixelQuadToPdfRect(q, pageHeightPt))
+  const pdfRects = quads.map(q => pixelQuadToPdfRect(q, frame))
 
   const rectBounds = pdfRects.reduce(
     (acc, r) => ({
@@ -163,15 +190,13 @@ function buildHighlightAnnotation(
 
   // QuadPoints: 8 numbers per quad in the order
   //   x1 y1  x2 y2  x3 y3  x4 y4
-  // which Acrobat interprets as top-left, top-right, bottom-left, bottom-right.
+  // which Acrobat interprets as top-left, top-right, bottom-left, bottom-right
+  // *of the text as displayed*. Mapping the displayed corners keeps that
+  // orientation right on rotated pages too.
   const quadPoints: number[] = []
-  for (const r of pdfRects) {
-    quadPoints.push(
-      r.x0, r.y1, // top-left
-      r.x1, r.y1, // top-right
-      r.x0, r.y0, // bottom-left
-      r.x1, r.y0  // bottom-right
-    )
+  for (const q of quads) {
+    const { tl, tr, bl, br } = quadCorners(q, frame)
+    quadPoints.push(tl.x, tl.y, tr.x, tr.y, bl.x, bl.y, br.x, br.y)
   }
 
   const color = hexToRgb(note.color)
@@ -188,16 +213,14 @@ function buildHighlightAnnotation(
   return context.register(dict)
 }
 
-type PDFPage = ReturnType<PDFDocument['getPages']>[number]
-
 function drawCalloutOnPage(
   page: PDFPage,
   note: Note,
-  pageHeightPt: number,
+  frame: PageFrame,
   helvetica: PDFFont,
   helveticaBold: PDFFont
 ) {
-  const rect = pixelQuadToPdfRect(note.bbox, pageHeightPt)
+  const rect = pixelQuadToPdfRect(note.bbox, frame)
   const fillColor = hexToRgb(note.color)
 
   const effectiveOpacity = clampOpacity(note.opacity ?? DEFAULT_CALLOUT_OPACITY)
@@ -224,9 +247,18 @@ function drawCalloutOnPage(
   const lineHeight = fontSize * 1.2
   const padding = 4
 
+  // Layout happens in *display* space (as the user drew the callout), then
+  // each line's baseline origin is mapped into PDF space. On rotated pages
+  // the text is drawn rotated by the page rotation so it reads upright.
+  const box = note.bbox
+  const left = Math.min(box.x0, box.x1)
+  const top = Math.min(box.y0, box.y1)
+  const bottom = Math.max(box.y0, box.y1)
+  const displayWidthPt = Math.abs(box.x1 - box.x0) / SCALE
+
   // Wrap lines to the rect width: split on user-provided newlines first,
   // then wrap each line to fit the rect horizontally.
-  const maxTextWidth = Math.max(1, rect.x1 - rect.x0 - padding * 2)
+  const maxTextWidth = Math.max(1, displayWidthPt - padding * 2)
   const lines: string[] = []
   for (const userLine of text.split('\n')) {
     lines.push(...wrapLine(userLine, font, fontSize, maxTextWidth))
@@ -236,20 +268,22 @@ function drawCalloutOnPage(
   // that overflows the bottom. Text color comes from the note if set,
   // otherwise falls back to near-black.
   const textColor = note.textColor ? hexToRgb(note.textColor) : rgb(0.07, 0.09, 0.15)
-  const topY = rect.y1 - padding - fontSize
-  const bottomY = rect.y0 + padding
+  const xPx = left + padding * SCALE
+  const bottomLimitPx = bottom - padding * SCALE
 
-  let y = topY
+  let baselinePx = top + (padding + fontSize) * SCALE
   for (const line of lines) {
-    if (y < bottomY) break
+    if (baselinePx > bottomLimitPx) break
+    const origin = frame.toPdf(xPx, baselinePx)
     page.drawText(line, {
-      x: rect.x0 + padding,
-      y,
+      x: origin.x,
+      y: origin.y,
       size: fontSize,
       font,
       color: textColor,
+      rotate: degrees(frame.rotation),
     })
-    y -= lineHeight
+    baselinePx += lineHeight * SCALE
   }
 }
 
