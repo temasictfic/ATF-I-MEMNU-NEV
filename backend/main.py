@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from config import settings
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.responses import HTMLResponse, Response
 from security import LoopbackGuard
 from starlette.staticfiles import StaticFiles
@@ -96,6 +96,7 @@ def create_app(
     boot_info: BootInfoProvider | None = None,
     dev_origins: list[str] | None = None,
     on_loop_ready: LoopCallback | None = None,
+    extra_routers: list[APIRouter] | None = None,
 ) -> FastAPI:
     """Build the API (plus, optionally, the static UI) app.
 
@@ -105,6 +106,7 @@ def create_app(
     dev_origins:   extra origins (e.g. the Vite dev server) allowed via CORS.
     on_loop_ready: called with the server's event loop during startup, so the
                    host can schedule coroutines on it thread-safely.
+    extra_routers: additional routers (the desktop host's /__host bridge).
     """
     app = FastAPI(
         title="Atf-ı Memnu API",
@@ -118,6 +120,8 @@ def create_app(
     from api.router import api_router
 
     app.include_router(api_router, prefix="/api")
+    for router in extra_routers or ():
+        app.include_router(router)
 
     if dev_origins:
         from fastapi.middleware.cors import CORSMiddleware

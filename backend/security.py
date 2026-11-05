@@ -13,9 +13,10 @@ ASGI middleware adds three checks:
 
 * **Host allow-list**: only ``127.0.0.1``/``localhost`` Host headers are
   accepted. This blocks DNS rebinding.
-* **Per-launch token** on every ``/api/*`` request: the ``X-Atfi-Token``
-  header for HTTP, and the ``token`` query parameter for the WebSocket,
-  where browsers cannot set headers.
+* **Per-launch token** on every ``/api/*`` and ``/__host/*`` request
+  (the desktop host's file/dialog bridge): the ``X-Atfi-Token`` header for
+  HTTP, and the ``token`` query parameter for the WebSocket, where
+  browsers cannot set headers.
 * **WebSocket Origin check**: CORS does not apply to WebSockets, so the
   Origin header is validated explicitly.
 
@@ -32,6 +33,7 @@ from urllib.parse import parse_qs
 ALLOWED_HOSTNAMES = frozenset({"127.0.0.1", "localhost"})
 TOKEN_HEADER = b"x-atfi-token"
 _PUBLIC_PATHS = frozenset({"/api/health"})
+PROTECTED_PREFIXES = ("/api/", "/__host/")
 
 
 def _header(scope, name: bytes) -> str | None:
@@ -79,7 +81,7 @@ class LoopbackGuard:
             return await self._reject(kind, send, 400, b"Invalid host")
 
         path: str = scope.get("path", "")
-        if path.startswith("/api/") and path not in _PUBLIC_PATHS:
+        if path.startswith(PROTECTED_PREFIXES) and path not in _PUBLIC_PATHS:
             if kind == "websocket":
                 query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
                 presented = (query.get("token") or [None])[0]

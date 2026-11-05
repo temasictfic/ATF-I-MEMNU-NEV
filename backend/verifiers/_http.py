@@ -7,6 +7,7 @@ across calls, and a shutdown hook the FastAPI app can wire into lifespan.
 """
 
 import asyncio
+import functools
 import ssl
 from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timezone
@@ -23,8 +24,13 @@ T = TypeVar("T")
 _session: aiohttp.ClientSession | None = None
 
 
+@functools.lru_cache(maxsize=1)
 def create_ssl_context() -> ssl.SSLContext:
     """Build an SSL context that trusts both OS and certifi CA certificates.
+
+    Cached: building it loads the whole OS store plus the certifi bundle,
+    and it used to be rebuilt on the event loop for every URL-liveness check
+    and OpenAIRE token exchange. SSL contexts are safe to share.
 
     Corporate proxies with TLS inspection inject their own root CA into the
     Windows certificate store.  The bundled certifi bundle doesn't include
@@ -275,8 +281,12 @@ def get_session() -> aiohttp.ClientSession:
     global _session
     if _session is None or _session.closed:
         connector = aiohttp.TCPConnector(ssl=create_ssl_context())
+        # trust_env: honour HTTP(S)_PROXY / NO_PROXY and, on Windows, the
+        # system proxy settings (urllib.request.getproxies reads the
+        # registry). Without it the verifiers could not reach any database
+        # from networks that only allow traffic through a proxy.
         _session = aiohttp.ClientSession(
-            timeout=get_client_timeout(), connector=connector
+            timeout=get_client_timeout(), connector=connector, trust_env=True
         )
     return _session
 

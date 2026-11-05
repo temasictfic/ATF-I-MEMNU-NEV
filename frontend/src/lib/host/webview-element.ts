@@ -11,7 +11,7 @@
 //            findInPage, stopFindInPage
 //   events:  did-start-loading, did-stop-loading, did-navigate,
 //            did-navigate-in-page, dom-ready, did-fail-load, found-in-page,
-//            zoom-changed, guest-shortcut (Ctrl+F / Esc / F5 / Ctrl±0 pressed
+//            zoom-changed, history-changed, guest-shortcut (Ctrl+F / Esc / F5 / Ctrl±0 pressed
 //            while the guest page has focus; replaces the old console.log
 //            sentinel channel)
 //   attributes: src, partition, allowpopups, background (keeps the view

@@ -122,6 +122,7 @@ async def exchange_refresh_token(
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=timeout),
             connector=connector,
+            trust_env=True,
         ) as session, session.get(REFRESH_ENDPOINT, params=params) as resp:
             if resp.status == 401 or resp.status == 403:
                 raise RuntimeError(

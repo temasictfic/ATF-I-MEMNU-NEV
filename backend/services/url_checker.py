@@ -165,7 +165,7 @@ async def check_urls(urls: list[str], timeout: float = 10.0) -> dict[str, bool]:
     client_timeout = aiohttp.ClientTimeout(total=timeout)
     connector = aiohttp.TCPConnector(ssl=create_ssl_context())
     async with aiohttp.ClientSession(
-        timeout=client_timeout, headers=_build_headers(), connector=connector
+        timeout=client_timeout, headers=_build_headers(), connector=connector, trust_env=True
     ) as session:
         results = await asyncio.gather(
             *(_check_url_with_session(session, u) for u in targets),
