@@ -421,7 +421,8 @@
     "exportPdfReviewNotice": "ARDEB Kaynakça Kontrol Sistemi'ndeki kaynaklara dair verilen Geçerli kararları kontrol edilmemelidir.\nKünye ve Uydurma kararları ise nihai kararlar olmayıp, ilgili kararlara sahip kaynaklar kontrol edilmelidir.",
     "exportPdfDone": "Rapor kaydedildi: {{name}}",
     "exportFailed": "Dışa aktarma başarısız: {{error}}",
-    "exportBatchFailed": "{{count}} PDF için dışa aktarma başarısız oldu."
+    "exportBatchFailed": "{{count}} PDF için dışa aktarma başarısız oldu.",
+    "sourceVerifyFailed": "[{{ref}}] doğrulanamadı ({{error}}). Önceki sonucu korundu; yeniden çalıştırabilirsiniz."
   },
   "model": {
     "downloading": "Kaynak modeli %{{percent}}",

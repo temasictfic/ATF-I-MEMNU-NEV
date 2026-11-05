@@ -421,7 +421,8 @@
     "exportPdfReviewNotice": "Valid decisions issued for references by the decision-support system in the ARDEB Citation Control System should not be reviewed. Citation and Fabricated decisions are not final; references with these decisions should be reviewed.",
     "exportPdfDone": "Report saved: {{name}}",
     "exportFailed": "Export failed: {{error}}",
-    "exportBatchFailed": "Export failed for {{count}} PDF(s)."
+    "exportBatchFailed": "Export failed for {{count}} PDF(s).",
+    "sourceVerifyFailed": "[{{ref}}] could not be verified ({{error}}). Its previous result was kept; you can run it again."
   },
   "model": {
     "downloading": "Citation model {{percent}}%",

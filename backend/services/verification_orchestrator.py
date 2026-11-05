@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import logging
 from typing import Any
 
 from api.websocket import manager
@@ -64,6 +65,8 @@ _DB_ID_TO_HOST = {
 # --- Cancellation registry ---
 # Maps key (pdf_id or source_id) to list of asyncio.Task objects.
 # Cancelling = calling .cancel() on the tasks for immediate interruption.
+logger = logging.getLogger("atfi.backend")
+
 _active_tasks: dict[str, list[asyncio.Task]] = {}
 # Latest run allowed to mutate each source's shared result entry. This prevents
 # a cancelled/obsolete run from overwriting a replacement run that started
@@ -77,9 +80,55 @@ def request_cancel(key: str) -> None:
         task.cancel()
 
 
+# Multi-PDF batch jobs that are still iterating over their PDFs. "Cancel all"
+# flags them so the batch loop stops instead of moving on to the next PDF:
+# per-PDF runs swallow CancelledError, so cancelling the current PDF's tasks
+# alone never reached the loop.
+_running_batches: set[str] = set()
+_cancelled_batches: set[str] = set()
+
+
+# Sources deleted (by a source-list edit) while their verification was still
+# running. Their task must neither finalize nor restore a result: either would
+# bring the removed source back into the PDF's results.
+_retired_sources: set[tuple[str, str]] = set()
+# Source ids covered by each running whole-PDF verification, including those
+# still queued behind the per-PDF concurrency limit (they have no result yet).
+_pdf_run_sources: dict[str, set[str]] = {}
+
+
+def retire_sources(pdf_id: str, current_ids: set[str], known_ids: set[str]) -> set[str]:
+    """Stop verification of this PDF's sources that no longer exist.
+
+    ``known_ids`` are the source ids that currently have results. Returns
+    every removed id (known or still queued in a running PDF run).
+    """
+    removed = (known_ids | _pdf_run_sources.get(pdf_id, set())) - current_ids
+    for source_id in removed:
+        if (pdf_id, source_id) in _active_source_jobs:
+            # Already running: its finally block must drop its result.
+            _retired_sources.add((pdf_id, source_id))
+        request_cancel(source_id)  # running or still queued
+    return removed
+
+
+def begin_batch(job_id: str) -> None:
+    _running_batches.add(job_id)
+
+
+def batch_cancelled(job_id: str) -> bool:
+    return job_id in _cancelled_batches
+
+
+def end_batch(job_id: str) -> None:
+    _running_batches.discard(job_id)
+    _cancelled_batches.discard(job_id)
+
+
 def cancel_all_active() -> None:
-    """Cancel all running verification tasks."""
-    for tasks in _active_tasks.values():
+    """Cancel all running verification tasks (and stop multi-PDF batches)."""
+    _cancelled_batches.update(_running_batches)
+    for tasks in list(_active_tasks.values()):
         for task in tasks:
             task.cancel()
 
@@ -198,10 +247,14 @@ async def verify_pdf_sources(
         async with source_semaphore:
             await _verify_source(pdf_id, source, results_store, index, job_id)
 
-    # Create tasks and register for cancellation
+    # Create tasks and register for cancellation, under the PDF *and* under
+    # each source id, so the per-source Stop button (cancel/source) also
+    # reaches sources that run as part of a whole-PDF verification.
     asyncio_tasks = [asyncio.create_task(verify_with_limit(s, i)) for i, s in enumerate(sources)]
-    for t in asyncio_tasks:
+    for t, s in zip(asyncio_tasks, sources):
         _register_task(pdf_id, t)
+        _register_task(s.id, t)
+    _pdf_run_sources.setdefault(pdf_id, set()).update(s.id for s in sources)
 
     try:
         await asyncio.gather(*asyncio_tasks, return_exceptions=True)
@@ -213,6 +266,13 @@ async def verify_pdf_sources(
         await asyncio.gather(*asyncio_tasks, return_exceptions=True)
     finally:
         _unregister_tasks(pdf_id, asyncio_tasks)
+        for t, s in zip(asyncio_tasks, sources):
+            _unregister_tasks(s.id, [t])
+        run_ids = _pdf_run_sources.get(pdf_id)
+        if run_ids is not None:
+            run_ids.difference_update(s.id for s in sources)
+            if not run_ids:
+                _pdf_run_sources.pop(pdf_id, None)
 
         # Calculate final counts (works for both normal and cancelled runs)
         results = results_store.get(pdf_id, {})
@@ -322,6 +382,10 @@ async def _verify_source(
     # even if cancellation lands before we assign inside the try.
     url_check_task: asyncio.Task | None = None
     cancelled = False
+    # Set when verification crashed internally (a bug or unexpected data).
+    # Such a run must not be finalized: _finalize_result(parsed=None) would
+    # record Low + "fabricated", a bibliographic verdict the source never got.
+    failure: str | None = None
 
     try:
         # Load settings for API keys and enabled databases
@@ -446,6 +510,8 @@ async def _verify_source(
         await manager.send_log("info", f"Source {source_id} verification cancelled",
                               pdf_id=pdf_id, source_id=source_id)
     except Exception as e:  # noqa: BLE001
+        failure = f"{type(e).__name__}: {e}"[:300]
+        logger.exception("Source %s verification crashed", source_id)
         await manager.send_log("error", f"Source {source_id} verification error: {e}",
                               pdf_id=pdf_id, source_id=source_id)
     finally:
@@ -462,16 +528,36 @@ async def _verify_source(
 
         # A replacement run may already own this source. Never let the older
         # task overwrite its in-progress or settled result.
-        if _active_source_jobs.get(source_key) == job_id:
-            if cancelled:
-                # Cancellation is not a bibliographic judgment. Restore the prior
-                # settled row, or remove a first-run placeholder, instead of
-                # finalizing partial work as Low/Fabricated and caching it.
-                if previous_result is not None and previous_result.status != "in_progress":
-                    results_store[pdf_id][source_id] = previous_result
+        if source_key in _retired_sources:
+            # The source was deleted mid-run: leave no result behind.
+            _retired_sources.discard(source_key)
+            results_store.get(pdf_id, {}).pop(source_id, None)
+            if _active_source_jobs.get(source_key) == job_id:
+                _active_source_jobs.pop(source_key, None)
+        elif _active_source_jobs.get(source_key) == job_id:
+            if cancelled or failure is not None:
+                # Neither a cancellation nor an internal error is a
+                # bibliographic judgment. Restore the prior settled row, or
+                # remove a first-run placeholder, instead of finalizing
+                # partial work as Low/Fabricated and caching it.
+                restored = (
+                    previous_result
+                    if previous_result is not None and previous_result.status != "in_progress"
+                    else None
+                )
+                if restored is not None:
+                    results_store[pdf_id][source_id] = restored
                 else:
                     results_store[pdf_id].pop(source_id, None)
                 _active_source_jobs.pop(source_key, None)
+                if failure is not None:
+                    await manager.broadcast("verify_source_failed", {
+                        "pdf_id": pdf_id,
+                        "source_id": source_id,
+                        "error": failure,
+                        "restored": restored.model_dump() if restored is not None else None,
+                        "job_id": job_id,
+                    })
             else:
                 await _finalize_result(
                     results_store, pdf_id, source_id, parsed, all_matches,

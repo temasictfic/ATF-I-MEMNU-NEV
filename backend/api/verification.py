@@ -78,12 +78,20 @@ def _load_sources_or_empty(pdf_id: str) -> list[SourceRectangle]:
 
 
 async def _verify_batch(job_id: str, pdf_ids: list[str], texts: dict[str, str], excluded_ids: set[str]):
-    from services.verification_orchestrator import verify_pdf_sources_filtered
+    from services.verification_orchestrator import (
+        batch_cancelled,
+        begin_batch,
+        end_batch,
+        verify_pdf_sources_filtered,
+    )
 
     await manager.send_log("info", f"Starting batch verification for {len(pdf_ids)} PDFs")
+    begin_batch(job_id)
 
     try:
         for pid in pdf_ids:
+            if batch_cancelled(job_id):
+                break
             sources = _load_sources_or_empty(pid)
             if not sources:
                 continue
@@ -103,13 +111,15 @@ async def _verify_batch(job_id: str, pdf_ids: list[str], texts: dict[str, str], 
                 except Exception as e:  # noqa: BLE001
                     await manager.send_log("error", f"Cache write failed for {pdf_id}: {e}")
 
-        verify_jobs[job_id]["status"] = "done"
-        await manager.send_log("success", "Batch verification complete")
+        verify_jobs[job_id]["status"] = "cancelled" if batch_cancelled(job_id) else "done"
+        await manager.send_log("success", f"Batch verification {verify_jobs[job_id]['status']}")
     except Exception as e:
         verify_jobs[job_id]["status"] = "failed"
         verify_jobs[job_id]["error"] = str(e)
         await manager.send_log("error", f"Batch verification job failed: {e}")
         raise
+    finally:
+        end_batch(job_id)
 
 
 @router.post("/verify/source/{pdf_id}/{source_id}")
@@ -233,7 +243,9 @@ async def get_verify_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
 
     job = verify_jobs[job_id]
-    job_done = job["status"] == "done"
+    # A cancelled or failed job is finished too: its PDFs must not read as
+    # "still running" forever.
+    job_done = job["status"] in ("done", "cancelled", "failed")
 
     summaries = []
     for pdf_id in job["pdfs"]:

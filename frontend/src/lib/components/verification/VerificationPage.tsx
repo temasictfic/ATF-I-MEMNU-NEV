@@ -1293,6 +1293,20 @@ export default function VerificationPage() {
     }
   }, [scholarQueue, scholarCurrentIndex, scholarLastDoneSourceId, scholarLastDoneUpdated, allPdfs, sourcesByPdf])
 
+  // A source's verification crashed in the backend: its card was restored
+  // (see verify_source_failed); tell the user so they can re-run it.
+  const lastSourceFailure = useVerificationStore(s => s.lastSourceFailure)
+  useEffect(() => {
+    if (!lastSourceFailure) return
+    const source = (sourcesByPdf[lastSourceFailure.pdfId] ?? []).find(s => s.id === lastSourceFailure.sourceId)
+    if (verifyToastTimerRef.current) clearTimeout(verifyToastTimerRef.current)
+    setVerifyToast(t('verification.sourceVerifyFailed', {
+      ref: source?.ref_number ?? '?',
+      error: lastSourceFailure.message,
+    }))
+    verifyToastTimerRef.current = setTimeout(() => setVerifyToast(null), VERIFY_TOAST_DURATION_MS)
+  }, [lastSourceFailure?.seq])
+
   // Show each deferred verification-complete toast only after the Scholar
   // scan for that same PDF has finished (including an empty scan queue).
   useEffect(() => {

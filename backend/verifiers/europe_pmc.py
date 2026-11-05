@@ -9,6 +9,7 @@ from services.match_scorer import score_match
 from services.scoring_constants import DOI_MATCH_MIN_SCORE
 
 from verifiers._http import (
+    acquire_or_rate_limited,
     check_parked_url,
     check_rate_limit,
     get_session,
@@ -17,6 +18,10 @@ from verifiers._http import (
 )
 
 EUROPE_PMC_API = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+# Pacing comes from the per-host rate in scrapers/rate_limiter.py. Waiting
+# longer than this for a slot reports "rate_limited" instead of eating the
+# whole per-database search timeout.
+_PACING_MAX_WAIT_SECONDS = 8.0
 _HOST = "www.ebi.ac.uk"
 
 
@@ -49,6 +54,7 @@ async def _search_query(
         "pageSize": "5",
     }
     check_parked_url(EUROPE_PMC_API)
+    await acquire_or_rate_limited(_HOST, _PACING_MAX_WAIT_SECONDS)
     async with session.get(EUROPE_PMC_API, params=params) as resp:
         check_rate_limit(resp)
         raise_for_unexpected_status(_HOST, resp)

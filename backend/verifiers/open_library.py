@@ -17,6 +17,7 @@ from models.verification_result import MatchResult
 from services.match_scorer import score_match
 
 from verifiers._http import (
+    acquire_or_rate_limited,
     check_parked_url,
     check_rate_limit,
     get_session,
@@ -24,6 +25,10 @@ from verifiers._http import (
 )
 
 SEARCH_API = "https://openlibrary.org/search.json"
+# Pacing comes from the per-host rate in scrapers/rate_limiter.py. Waiting
+# longer than this for a slot reports "rate_limited" instead of eating the
+# whole per-database search timeout.
+_PACING_MAX_WAIT_SECONDS = 8.0
 _HOST = "openlibrary.org"
 
 
@@ -50,6 +55,7 @@ async def _search_query(
     params = {**params, "limit": "5", "fields": "title,author_name,first_publish_year,isbn,key,publisher,subject"}
 
     check_parked_url(SEARCH_API)
+    await acquire_or_rate_limited(_HOST, _PACING_MAX_WAIT_SECONDS)
     async with session.get(SEARCH_API, params=params) as resp:
         check_rate_limit(resp)
         raise_for_unexpected_status(_HOST, resp)

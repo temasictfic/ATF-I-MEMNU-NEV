@@ -145,9 +145,13 @@ These change behaviour or need a bigger refactor, so they were left alone.
 ### Correctness and behaviour
 
 1. **An internal error becomes "fabricated".** `_verify_source` catches every exception, and `_finalize_result(parsed=None)` then records `low` + `fabricated` (`backend/services/verification_orchestrator.py`, around lines 448 and 796). An internal error should probably surface as an error state instead.
+   - ✅ **Fixed:** an internal error is treated like a cancel. The previous result is kept (or the source goes back to unverified), nothing is cached, and a `verify_source_failed` event shows a toast so the source can be re-run.
 2. **"Cancel all" doesn't stop a multi-PDF batch.** Batch jobs swallow `CancelledError` per PDF and move on to the next one (`api/verification.py` `_verify_batch`, orchestrator 208-213).
+   - ✅ **Fixed:** "cancel all" flags running batches, and the loop stops before the next PDF (job status `cancelled`).
 3. **Races during verification:** `PUT /parse/sources` replaces results while a run is still writing them, so removed sources come back. `cancel/source` misses sources that belong to a PDF run.
+   - ✅ **Fixed:** PDF-run tasks are also registered per source, so Stop reaches them. Source edits retire removed sources (running or queued) and prune the live results dict in place.
 4. **No request pacing** for Europe PMC, TRDizin and Open Library, even though rates are configured for two of their hosts.
+   - ✅ **Fixed:** Europe PMC (0.5 s) and Open Library (0.6 s) are paced. TRDizin is left unpaced on purpose.
 5. **`search_timeout` changes need a restart.** The aiohttp session timeout is frozen at creation.
 6. **`strip_source_noise` is not idempotent** but runs 3–4 times per source. For example, `"[12] 3-D printing"` loses `3-` on the second pass.
 7. **"~X" (verify non-high) Scholar scan.** An old comment says it should run *regardless* of the auto-Scholar setting, but the code checks the setting. It now schedules once and respects the setting; the comment was updated. Decide whether it should be forced.

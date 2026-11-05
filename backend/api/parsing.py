@@ -25,6 +25,7 @@ from services.cache_store import (
     save_sources_cache,
 )
 from services.job_store import verify_results
+from services.verification_orchestrator import retire_sources
 
 from api.websocket import manager
 
@@ -96,13 +97,16 @@ async def update_sources(pdf_id: str, request: UpdateSourcesRequest):
 
     save_sources_cache(pdf_id, request.sources, numbered, page_count)
 
-    # Clean stale verify results for removed/renumbered sources
+    # Clean stale verify results for removed/renumbered sources.
     current_ids = {s.id for s in request.sources}
     clean_verify_cache(pdf_id, current_ids)
-    if pdf_id in verify_results:
-        verify_results[pdf_id] = {
-            k: v for k, v in verify_results[pdf_id].items() if k in current_ids
-        }
+    # Stop verification still running (or queued) for removed sources, and
+    # prune the *existing* results dict in place: running tasks write into it,
+    # so replacing it with a new dict let them bring removed sources back.
+    pdf_results = verify_results.get(pdf_id, {})
+    removed = retire_sources(pdf_id, current_ids, set(pdf_results))
+    for key in removed:
+        pdf_results.pop(key, None)
     return {"success": True}
 
 

@@ -42,6 +42,10 @@ interface VerificationState {
   // source receives a fresh verify_completed in the new run, or on cancel
   // restoration.
   priorResultsByPdf: Record<string, Record<string, VerificationResult>>
+  // Last source whose verification crashed in the backend (not a "no match"
+  // verdict). The card is restored to its previous state; the page shows a
+  // toast. `seq` changes on every failure so repeated ones still notify.
+  lastSourceFailure: { pdfId: string; sourceId: string; message: string; seq: number } | null
   selectedSourceId: string | null
   verifyTexts: Record<string, string>
   sourceOriginalTexts: Record<string, string>
@@ -222,6 +226,7 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
   summaries: {},
   sourceProgress: {},
   cancelledSourceIds: new Set<string>(),
+  lastSourceFailure: null,
   activeJobIdBySource: {},
   activeJobIdByPdf: {},
   priorResultsByPdf: {},
@@ -1462,6 +1467,65 @@ export function initVerificationListeners(): () => void {
             },
           },
           priorResultsByPdf: nextPriorResults,
+        }
+      })
+    }),
+
+    // Verification of one source crashed in the backend (bug or unexpected
+    // data). The backend restored the source's previous result (or none, for
+    // a first run) instead of recording a bogus Low/"fabricated" verdict;
+    // mirror that here and surface the error.
+    wsClient.on('verify_source_failed', (data) => {
+      const pdfId = data.pdf_id as string
+      const sourceId = data.source_id as string
+      if (isStaleSourceEvent(data, sourceId)) return
+      if (useVerificationStore.getState().cancelledSourceIds.has(sourceId)) return
+
+      const restored = (data.restored as VerificationResult | null) ?? null
+      useVerificationStore.setState(state => {
+        const { [sourceId]: _dropped, ...rest } = state.resultsByPdf[pdfId] ?? {}
+        const updatedPdfResults: Record<string, VerificationResult> = restored
+          ? { ...rest, [sourceId]: restored }
+          : rest
+        const pdfPriorSnapshot = state.priorResultsByPdf[pdfId]
+        let nextPriorResults = state.priorResultsByPdf
+        if (pdfPriorSnapshot && sourceId in pdfPriorSnapshot) {
+          const { [sourceId]: _snap, ...snapRest } = pdfPriorSnapshot
+          nextPriorResults = { ...state.priorResultsByPdf, [pdfId]: snapRest }
+        }
+        let high = 0, medium = 0, low = 0, inProgress = 0
+        for (const r of Object.values(updatedPdfResults)) {
+          if (r.status === 'high') high++
+          else if (r.status === 'medium') medium++
+          else if (r.status === 'low') low++
+          else if (r.status === 'in_progress') inProgress++
+        }
+        const prevSummary = state.summaries[pdfId]
+        return {
+          resultsByPdf: { ...state.resultsByPdf, [pdfId]: updatedPdfResults },
+          sourceProgress: {
+            ...state.sourceProgress,
+            [sourceId]: { currentDb: null, checkedDbs: state.sourceProgress[sourceId]?.checkedDbs ?? [] },
+          },
+          summaries: {
+            ...state.summaries,
+            [pdfId]: {
+              pdf_id: pdfId,
+              high,
+              medium,
+              low,
+              in_progress: inProgress,
+              total: prevSummary?.total ?? Object.keys(updatedPdfResults).length,
+              completed: inProgress === 0 && (prevSummary?.completed ?? false),
+            },
+          },
+          priorResultsByPdf: nextPriorResults,
+          lastSourceFailure: {
+            pdfId,
+            sourceId,
+            message: String(data.error ?? ''),
+            seq: (state.lastSourceFailure?.seq ?? 0) + 1,
+          },
         }
       })
     }),
