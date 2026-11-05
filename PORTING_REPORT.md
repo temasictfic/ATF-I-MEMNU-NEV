@@ -228,6 +228,7 @@ These change behaviour or need a bigger refactor, so they were left alone.
   - `datasets` 3→5 drops dataset loading scripts, which `prepare_data.py`'s `load_dataset(PUBLIC_DATASET_ID)` may rely on.
   - The pinned `optimum==2.3.0` no longer contains `optimum.onnxruntime` (it moved to the separate `optimum-onnx` package, which `TRAINING_GUIDE.md` mentions), so `export_onnx.py` likely fails with the file as it is today.
   - Re-pin both together the next time you retrain.
+  - ✔️ **Decided:** left as is until the next retrain.
 
 ---
 
