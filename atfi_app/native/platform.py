@@ -34,6 +34,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..events import HostEvents
+from ..window_placement import Placement, Rect, WindowStateStore, compute_placement
 
 logger = logging.getLogger("atfi.native")
 
@@ -86,6 +87,8 @@ class WebView2Platform:
         self._drops = _DropQueue()
         self._exit_code = 0
         self._on_shown: Callable[[], None] | None = None
+        self._window_store: WindowStateStore | None = None
+        self._placement: Placement | None = None
 
     # ---- lifecycle -------------------------------------------------------------
 
@@ -97,11 +100,13 @@ class WebView2Platform:
         icon: Path,
         storage_path: Path,
         on_shown: Callable[[], None] | None = None,
+        window_state_path: Path | None = None,
     ) -> int:
         import webview  # pywebview
 
         self._origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
         self._on_shown = on_shown
+        self._window_store = WindowStateStore(window_state_path) if window_state_path else None
         storage_path.mkdir(parents=True, exist_ok=True)
         webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
         webview.settings["ALLOW_DOWNLOADS"] = False
@@ -136,6 +141,82 @@ class WebView2Platform:
         self._main_ctrl = self._form.browser.webview
         self._ui = UiThread(self._form)
         self._main_ctrl.CoreWebView2InitializationCompleted += self._on_main_core_ready
+        try:
+            self._apply_placement()
+        except Exception:  # noqa: BLE001  (never block startup on window geometry)
+            logger.exception("could not place the window")
+        self._form.Shown += self._on_form_shown
+        self._form.FormClosing += self._on_form_closing
+
+    # ---- window size and position (UI thread) --------------------------------
+
+    def _screen_work_areas(self) -> tuple[list[Rect], Rect]:
+        import System.Windows.Forms as WinForms  # type: ignore[import-not-found]
+
+        def rect(r: Any) -> Rect:
+            return Rect(int(r.X), int(r.Y), int(r.Width), int(r.Height))
+
+        areas = [rect(screen.WorkingArea) for screen in WinForms.Screen.AllScreens]
+        return areas, rect(WinForms.Screen.PrimaryScreen.WorkingArea)
+
+    def _apply_placement(self) -> None:
+        """Open at the remembered size and position, kept on a screen.
+
+        pywebview sizes the window as 1400×900 logical pixels times the display
+        scale (minimum 1000×700) without looking at the screen, which at
+        125-150 % is larger than a laptop screen.
+        """
+        import System.Windows.Forms as WinForms  # type: ignore[import-not-found]
+        from System.Drawing import Rectangle, Size  # type: ignore[import-not-found]
+
+        form = self._form
+        saved = self._window_store.load() if self._window_store else None
+        areas, primary = self._screen_work_areas()
+        try:
+            scale = float(form._scale)  # pywebview: DPI of the window / 96
+        except Exception:  # noqa: BLE001
+            scale = 1.0
+        placement = compute_placement(saved, areas, primary, scale)
+        b = placement.bounds
+        form.StartPosition = WinForms.FormStartPosition.Manual
+        form.MinimumSize = Size(placement.min_width, placement.min_height)
+        form.Bounds = Rectangle(b.x, b.y, b.width, b.height)
+        if placement.maximized:
+            form.WindowState = WinForms.FormWindowState.Maximized
+        self._placement = placement
+        logger.info("window placement %s (scale %.2f, saved=%s)", placement, scale, saved is not None)
+
+    def _on_form_shown(self, sender: Any, args: Any) -> None:
+        # WinForms DPI auto-scaling can resize the form once more while it is
+        # shown; put it back where it was placed.
+        import System.Windows.Forms as WinForms  # type: ignore[import-not-found]
+        from System.Drawing import Rectangle  # type: ignore[import-not-found]
+
+        placement = self._placement
+        form = self._form
+        if placement is None or form.WindowState != WinForms.FormWindowState.Normal:
+            return
+        b = placement.bounds
+        current = form.Bounds
+        if (current.X, current.Y, current.Width, current.Height) != (b.x, b.y, b.width, b.height):
+            logger.info("window resized while showing (%s); restoring %s", current, b)
+            form.Bounds = Rectangle(b.x, b.y, b.width, b.height)
+
+    def _on_form_closing(self, sender: Any, args: Any) -> None:
+        import System.Windows.Forms as WinForms  # type: ignore[import-not-found]
+
+        if getattr(args, "Cancel", False) or self._window_store is None:
+            return
+        try:
+            form = self._form
+            state = form.WindowState
+            r = form.Bounds if state == WinForms.FormWindowState.Normal else form.RestoreBounds
+            self._window_store.save(
+                Rect(int(r.X), int(r.Y), int(r.Width), int(r.Height)),
+                maximized=state == WinForms.FormWindowState.Maximized,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("could not save the window position")
 
     def _on_window_shown(self) -> None:
         if self._on_shown is not None:
@@ -329,6 +410,7 @@ class WebView2Platform:
             if value != 42:
                 raise AssertionError(f"guest executeJavaScript returned {value!r}")
 
+            self._check_window_on_screen()
             self._capture_screenshot(Path(self._smoke_path))
             logger.info("Smoke test passed")
             self._exit_code = 0
@@ -337,6 +419,22 @@ class WebView2Platform:
             self._exit_code = 1
         finally:
             self.request_quit()
+
+    def _check_window_on_screen(self) -> None:
+        def measure() -> tuple[Any, Any]:
+            import System.Windows.Forms as WinForms  # type: ignore[import-not-found]
+
+            return self._form.Bounds, WinForms.Screen.FromControl(self._form).WorkingArea
+
+        bounds, area = self._ui.invoke(measure)
+        logger.info("window bounds %s, screen working area %s", bounds, area)
+        if not (
+            bounds.X >= area.X
+            and bounds.Y >= area.Y
+            and bounds.X + bounds.Width <= area.X + area.Width
+            and bounds.Y + bounds.Height <= area.Y + area.Height
+        ):
+            raise AssertionError(f"window {bounds} is not inside the screen working area {area}")
 
     def _capture_screenshot(self, target: Path) -> None:
         from Microsoft.Web.WebView2.Core import CoreWebView2CapturePreviewImageFormat  # type: ignore[import-not-found]

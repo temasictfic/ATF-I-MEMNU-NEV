@@ -163,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
                 icon=paths.icon_path(),
                 storage_path=paths.webview2_data_dir(),
                 on_shown=lambda: updater.schedule_startup_check(5.0),
+                window_state_path=paths.local_data_dir() / "window.json",
             )
     finally:
         logger.info("Shutting down")

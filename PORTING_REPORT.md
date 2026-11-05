@@ -118,6 +118,11 @@ Google may still show CAPTCHAs based on IP and request rate, which the existing 
 - **Startup language:** the UI always started in Turkish until settings loaded. The saved language is now injected at boot.
 - **Recent-PDF list:** it was lost after any launch without an import. It is now host-persisted (`atfi_app/session_store.py`).
 
+### Fixed after 3.0.0 (reported from the field)
+
+- **Desktop shortcut missing after upgrading from the Electron app.** The old NSIS uninstaller copies itself to `%TEMP%` and returns at once, so setup didn't really wait for it. It then deleted the old shortcuts, which have the same names as ours, after setup had created them. Setup now waits until the old uninstall has finished (its uninstall key and uninstaller are gone), and recreates any of its shortcuts that are missing at the end.
+- **The window opened partly off screen and didn't remember its size or position.** pywebview opens 1400×900 (minimum 1000×700) logical pixels times the display scale without checking the screen, which is larger than a laptop screen at 125–150 %. The window now reopens at its last size, position and maximized state (`%LOCALAPPDATA%\atfi-memnu-app\window.json`). It is always pulled fully onto a screen, including when a monitor has been disconnected, and the minimum size is capped to the screen. A first launch uses 1400×900 or 92 % of the screen, whichever is smaller. `atfi_app/window_placement.py` is unit-tested, and the Windows smoke test fails if the window isn't inside the screen's working area.
+
 ### Dead code removed
 
 - **Backend:**
@@ -140,71 +145,71 @@ Google may still show CAPTCHAs based on IP and request rate, which the existing 
 
 ## 3. Found but not changed (your call)
 
-These change behaviour or need a bigger refactor, so they were left alone.
+These changed behaviour or needed a bigger refactor, so each was left to the maintainer's call. ~~Struck through~~: implemented afterwards (the ✅ note says how). Not struck: left as is on purpose (✔️ **Decided**).
 
 ### Correctness and behaviour
 
-1. **An internal error becomes "fabricated".** `_verify_source` catches every exception, and `_finalize_result(parsed=None)` then records `low` + `fabricated` (`backend/services/verification_orchestrator.py`, around lines 448 and 796). An internal error should probably surface as an error state instead.
+1. ~~**An internal error becomes "fabricated".** `_verify_source` catches every exception, and `_finalize_result(parsed=None)` then records `low` + `fabricated` (`backend/services/verification_orchestrator.py`, around lines 448 and 796). An internal error should probably surface as an error state instead.~~
    - ✅ **Fixed:** an internal error is treated like a cancel. The previous result is kept (or the source goes back to unverified), nothing is cached, and a `verify_source_failed` event shows a toast so the source can be re-run.
-2. **"Cancel all" doesn't stop a multi-PDF batch.** Batch jobs swallow `CancelledError` per PDF and move on to the next one (`api/verification.py` `_verify_batch`, orchestrator 208-213).
+2. ~~**"Cancel all" doesn't stop a multi-PDF batch.** Batch jobs swallow `CancelledError` per PDF and move on to the next one (`api/verification.py` `_verify_batch`, orchestrator 208-213).~~
    - ✅ **Fixed:** "cancel all" flags running batches, and the loop stops before the next PDF (job status `cancelled`).
-3. **Races during verification:** `PUT /parse/sources` replaces results while a run is still writing them, so removed sources come back. `cancel/source` misses sources that belong to a PDF run.
+3. ~~**Races during verification:** `PUT /parse/sources` replaces results while a run is still writing them, so removed sources come back. `cancel/source` misses sources that belong to a PDF run.~~
    - ✅ **Fixed:** PDF-run tasks are also registered per source, so Stop reaches them. Source edits retire removed sources (running or queued) and prune the live results dict in place.
-4. **No request pacing** for Europe PMC, TRDizin and Open Library, even though rates are configured for two of their hosts.
+4. ~~**No request pacing** for Europe PMC, TRDizin and Open Library, even though rates are configured for two of their hosts.~~
    - ✅ **Fixed:** Europe PMC (0.5 s) and Open Library (0.6 s) are paced. TRDizin is left unpaced on purpose.
-5. **`search_timeout` changes need a restart.** The aiohttp session timeout is frozen at creation.
+5. ~~**`search_timeout` changes need a restart.** The aiohttp session timeout is frozen at creation.~~
    - ✅ **Fixed:** the session timeout is a fixed 300 s backstop. The per-call timeout, which reads the live setting, does the limiting.
-6. **`strip_source_noise` is not idempotent** but runs 3–4 times per source. For example, `"[12] 3-D printing"` loses `3-` on the second pass.
+6. ~~**`strip_source_noise` is not idempotent** but runs 3–4 times per source. For example, `"[12] 3-D printing"` loses `3-` on the second pass.~~
    - ✅ **Fixed:** raw cached text is cleaned exactly once, at the start of verification. Text from the UI (already cleaned for display, or edited) is used as-is, including in Scholar scoring and `extract-fields`. The frontend no longer re-cleans before sending, and the search helper is idempotent. The bug was user-visible: the card showed `3-D printing` but `D printing` was verified.
 7. **"~X" (verify non-high) Scholar scan.** An old comment says it should run *regardless* of the auto-Scholar setting, but the code checks the setting. It now schedules once and respects the setting; the comment was updated. Decide whether it should be forced.
    - ✔️ **Decided:** keep respecting the setting (no change).
-8. **Settings store overwrites in-flight edits.** Autosave and DB-op responses replace the whole `settings` object, so characters typed while a request is in flight can be lost. Concurrent DB toggles can also resolve out of order.
+8. ~~**Settings store overwrites in-flight edits.** Autosave and DB-op responses replace the whole `settings` object, so characters typed while a request is in flight can be lost. Concurrent DB toggles can also resolve out of order.~~
    - ✅ **Fixed:** server echoes are merged instead of replacing settings. Fields edited after the request was sent are kept (API keys per key, except the server-managed OpenAIRE token), and only the newest database operation's response is applied.
-9. **PDF annotation coordinates** ignore a non-zero MediaBox origin and `/Rotate` (`frontend/src/lib/pdf/annotation-writer.ts`). **Report writer:** `wrapText` never hard-breaks long URLs or DOIs, so they overflow.
+9. ~~**PDF annotation coordinates** ignore a non-zero MediaBox origin and `/Rotate` (`frontend/src/lib/pdf/annotation-writer.ts`). **Report writer:** `wrapText` never hard-breaks long URLs or DOIs, so they overflow.~~
    - ✅ **Fixed:** annotations go through `page-frame.ts`, the exact inverse of pdf.js's viewport (box origin, CropBox, /Rotate). Callout text is drawn upright on rotated pages. This is unit-tested against pdf.js on six page setups (`npm test`). Report tokens wider than the column are hard-broken, preferring URL/DOI separators.
 10. **Source detection:** the loose header regex matches substrings ("Resources", "Kaynakları"), so an early body-text line can win over the real KAYNAKLAR header.
    - ✔️ **Decided:** left as is.
-11. **Polling** stops permanently after 3 errors and isn't resumed after a WebSocket reconnect, so cards can stay `in_progress`. Polling runs every 5 s even while the WebSocket is healthy.
+11. ~~**Polling** stops permanently after 3 errors and isn't resumed after a WebSocket reconnect, so cards can stay `in_progress`. Polling runs every 5 s even while the WebSocket is healthy.~~
    - ✅ **Fixed:** polling runs every 5 s only while the WebSocket is down and every 30 s as a safety net otherwise. Errors back off up to 60 s and never stop polling, a reconnect re-syncs immediately, and ticks no longer overlap. Measured: 2 polls instead of about 8 during a 40 s run.
-12. **URL checker:** the SSRF guard resolves DNS itself, and aiohttp resolves again when it connects (DNS-rebinding race).
+12. ~~**URL checker:** the SSRF guard resolves DNS itself, and aiohttp resolves again when it connects (DNS-rebinding race).~~
    - ✅ **Fixed:** a connect-time resolver drops non-public addresses, so the address used is the one validated. Configured proxy hosts are exempt.
 13. **Notes stay after a PDF is removed** and reappear on re-import (`clearNotesForPdf` exists but isn't called). This may be intentional.
    - ✔️ **Decided:** keep. Re-importing a PDF brings its notes back.
-14. **`GET /settings/openaire/status`** exists so the UI can show silent OpenAIRE auth failures, but nothing displays it.
+14. ~~**`GET /settings/openaire/status`** exists so the UI can show silent OpenAIRE auth failures, but nothing displays it.~~
    - ✅ **Fixed:** while connected, Settings shows the last failed token renewal (time and error) and says OpenAIRE is being searched anonymously. Connecting or disconnecting clears the recorded failure.
-15. **Settings modal:** pressing Enter on *any* button applies the values.
+15. ~~**Settings modal:** pressing Enter on *any* button applies the values.~~
    - ✅ **Fixed:** Enter applies only from the URL fields; on a button it activates that button. Escape now closes the dialog wherever focus is (before, it only worked from inside the fields). Also fixed the English label typo "Concurrent Sources Countper PDF".
 
 ### Performance
 
-- **VerificationPage (≈3,300 lines)** subscribes to whole store maps with no `useShallow` and no memoized card component. Every `verify_db_checked` WebSocket event re-renders the whole page, even on another tab.
+- ~~**VerificationPage (≈3,300 lines)** subscribes to whole store maps with no `useShallow` and no memoized card component. Every `verify_db_checked` WebSocket event re-renders the whole page, even on another tab.~~
   - ✅ **Fixed:**
     - Cards are a memoized `SourceCard` with stable props and callbacks.
     - The page subscribes to the selected PDF's results, its sources' progress, and a per-PDF overview (`pdf-overview.ts`) whose entries keep their identity until a count or running flag changes. Other PDFs' events no longer re-render it.
     - The store applies WebSocket updates once per frame (below).
     - Measured on a 48-source run (every database failing fast, same harness before and after): React commits 965 → about 190, main-thread script time 7.7 s → 0.9 s.
-- **ParsingPage** renders NotesLayer and source boxes for every page (only the canvases are virtualized). Drags and scrolling set state on every event.
+- ~~**ParsingPage** renders NotesLayer and source boxes for every page (only the canvases are virtualized). Drags and scrolling set state on every event.~~
   - ✅ **Fixed:**
     - Notes and source boxes are mounted only for the visible pages, plus the selected source's and note's pages so a drag in progress is never unmounted. On an 8-page test PDF, 0 of 48 boxes are mounted at the top and 24 at the bottom.
     - Sources and notes are grouped by page once instead of filtered per page per render.
     - Scrolling only sets state when the set of visible pages changes.
     - Drags still update on every move.
-- **The PDF is read and parsed up to 3 times** per import/view/export.
+- ~~**The PDF is read and parsed up to 3 times** per import/view/export.~~
   - ✅ **Fixed:**
     - Import loads the PDF through the document cache, so the viewer reuses that pdf.js document instead of reading and parsing the file again.
     - A cached import that only needs the page count no longer parses the text.
     - The viewed document is pinned, so importing a folder can't evict it.
     - Export still reads the file once for pdf-lib. Keeping the bytes of every cached PDF would double their memory for one local read.
-- **O(n²) result accumulation** per PDF, and per-note copies in auto-notes.
+- ~~**O(n²) result accumulation** per PDF, and per-note copies in auto-notes.~~
   - ✅ **Fixed:**
     - The high-frequency events (started, db checking/checked, source done) are queued and applied once per frame. Each map is copied once per batch and a PDF's counts are recomputed once per batch, instead of per event.
     - Every other store write flushes the queue first, so ordering is unchanged.
     - Auto-notes adds all notes in one store update (`addNotes`).
-- **Backend:**
-  - synchronous disk I/O on the event loop (cache/settings);
-  - `inspect.signature` per verifier call;
-  - the verifier registry is rebuilt per source;
-  - Crossref makes up to 8 query variants per source at 1 req/s.
+- ~~**Backend:**~~
+  - ~~synchronous disk I/O on the event loop (cache/settings);~~
+  - ~~`inspect.signature` per verifier call;~~
+  - ~~the verifier registry is rebuilt per source;~~
+  - ~~Crossref makes up to 8 query variants per source at 1 req/s.~~
   - ✅ **Fixed:**
     - Cache and settings files are read and written in a worker thread, with one lock per file so operations on a file stay in call order. Read-modify-write sequences hold the lock throughout, and settings writes coalesce to the newest.
     - The signature check and the verifier registry are cached.
@@ -267,3 +272,5 @@ Done in this (Linux) environment:
 - [ ] Drag-and-drop PDFs from Explorer.
 - [ ] Update: download, progress, cancel, install and relaunch; install-on-quit.
 - [ ] Fresh install downloads the model; upgrading over the Electron app reuses its model and keeps settings.
+- [ ] Upgrading over the Electron app with "Create a desktop shortcut" checked leaves a working desktop shortcut.
+- [ ] The window reopens where it was closed, including maximized, and comes back on screen after unplugging a second monitor.

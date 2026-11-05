@@ -79,6 +79,8 @@ turkish.WebView2Installing=Microsoft Edge WebView2 Runtime kuruluyor...
 english.WebView2Installing=Installing the Microsoft Edge WebView2 Runtime...
 turkish.RemoveLegacy=Bilgisayarda uygulamanın eski (Electron tabanlı) sürümü kurulu. Kaldırılsın mı?%n%nAyarlarınız, API anahtarlarınız ve kayıtlarınız korunur.
 english.RemoveLegacy=An older (Electron-based) version of the app is installed. Remove it?%n%nYour settings, API keys and records are kept.
+turkish.RemovingLegacy=Eski sürüm kaldırılıyor...
+english.RemovingLegacy=Removing the old version...
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:DesktopIcon}"; Flags: unchecked
@@ -305,11 +307,66 @@ end;
 
 { ---------------- Old Electron install ---------------- }
 
+{ The uninstall string's executable: the first quoted token, or up to the first space. }
+function UninstallerPath(const Command: String): String;
+var
+  S: String;
+  P: Integer;
+begin
+  S := Trim(Command);
+  if (Length(S) > 0) and (S[1] = '"') then
+  begin
+    Delete(S, 1, 1);
+    P := Pos('"', S);
+  end
+  else
+    P := Pos(' ', S);
+  if P > 0 then
+    Result := Copy(S, 1, P - 1)
+  else
+    Result := S;
+end;
+
+{ electron-builder's NSIS uninstaller copies itself to %TEMP%, starts the copy
+  and returns at once, so ewWaitUntilTerminated does not wait for the actual
+  uninstall. The copy then deleted the old desktop and Start menu shortcuts,
+  which have the same names as ours, after we had created them. Wait until
+  it is done: its uninstall key and uninstaller are gone (at most 2 min). }
+procedure WaitForLegacyUninstall(const Key, Uninstaller: String);
+var
+  Waited: Integer;
+begin
+  Waited := 0;
+  while (Waited < 120000) and (RegKeyExists(HKCU, Key) or ((Uninstaller <> '') and FileExists(Uninstaller))) do
+  begin
+    Sleep(250);
+    Waited := Waited + 250;
+  end;
+  { Let it finish removing the install folder. }
+  Sleep(1000);
+end;
+
+{ Safety net: recreate our shortcuts if anything removed them during setup. }
+procedure EnsureShortcuts();
+var
+  Exe: String;
+begin
+  Exe := ExpandConstant('{app}\{#AppExe}');
+  try
+    if not FileExists(ExpandConstant('{autoprograms}\{#AppName}.lnk')) then
+      CreateShellLink(ExpandConstant('{autoprograms}\{#AppName}.lnk'), '', Exe, '', ExpandConstant('{app}'), '', 0, SW_SHOWNORMAL);
+    if WizardIsTaskSelected('desktopicon') and not FileExists(ExpandConstant('{autodesktop}\{#AppName}.lnk')) then
+      CreateShellLink(ExpandConstant('{autodesktop}\{#AppName}.lnk'), '', Exe, '', ExpandConstant('{app}'), '', 0, SW_SHOWNORMAL);
+  except
+    Log('Could not create a shortcut: ' + GetExceptionMessage);
+  end;
+end;
+
 procedure OfferLegacyUninstall();
 var
   Keys: TArrayOfString;
   I, ResultCode: Integer;
-  Root, DisplayName, Publisher, Quiet: String;
+  Root, DisplayName, Publisher, Quiet, Uninstall: String;
 begin
   Root := 'Software\Microsoft\Windows\CurrentVersion\Uninstall';
   if not RegGetSubkeyNames(HKCU, Root, Keys) then
@@ -327,8 +384,12 @@ begin
       Continue;
     if WizardSilent or (MsgBox(CustomMessage('RemoveLegacy'), mbConfirmation, MB_YESNO) <> IDYES) then
       Exit;
+    if not RegQueryStringValue(HKCU, Root + '\' + Keys[I], 'UninstallString', Uninstall) then
+      Uninstall := Quiet;
+    WizardForm.StatusLabel.Caption := CustomMessage('RemovingLegacy');
     { electron-builder's per-user uninstaller keeps %APPDATA% data by default. }
     Exec(ExpandConstant('{cmd}'), '/C "' + Quiet + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    WaitForLegacyUninstall(Root + '\' + Keys[I], UninstallerPath(Uninstall));
     Exit;
   end;
 end;
@@ -341,5 +402,8 @@ begin
     EnsureWebView2();
   end;
   if CurStep = ssPostInstall then
+  begin
     InstallModelFiles();
+    EnsureShortcuts();
+  end;
 end;
