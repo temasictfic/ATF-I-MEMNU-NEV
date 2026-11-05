@@ -177,6 +177,18 @@ These change behaviour or need a bigger refactor, so they were left alone.
 
 - API keys are stored in plain text in `settings.json`. Encrypting them with Windows DPAPI would be cheap.
 
+### Dependencies
+
+- **App dependencies:**
+  - Every app dependency is on its latest release (Python 3.14, Vite 8 with Rolldown, React 19.3, pdf.js 6.5, FastAPI 0.162, onnxruntime 1.31, current GitHub Actions majors).
+  - `npm audit` and `pip-audit` report no known vulnerabilities. Both now run in CI, and Dependabot (`.github/dependabot.yml`) opens weekly update PRs.
+  - pywebview is excluded from Dependabot: `atfi_app/native` relies on its internals, so bump it by hand and check the Windows smoke test.
+- **Training pipeline:**
+  - `backend/training/requirements.txt` is **not** updated. It isn't shipped, and the upgrade can't be verified without the GPU training run.
+  - `datasets` 3→5 drops dataset loading scripts, which `prepare_data.py`'s `load_dataset(PUBLIC_DATASET_ID)` may rely on.
+  - The pinned `optimum==2.3.0` no longer contains `optimum.onnxruntime` (it moved to the separate `optimum-onnx` package, which `TRAINING_GUIDE.md` mentions), so `export_onnx.py` likely fails with the file as it is today.
+  - Re-pin both together the next time you retrain.
+
 ---
 
 ## 4. User-visible differences

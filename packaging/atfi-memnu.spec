@@ -63,8 +63,11 @@ excludes = [
     "scipy",
     # GUI toolkits pywebview can use on other platforms
     "tkinter", "PyQt5", "PyQt6", "PySide2", "PySide6", "qtpy", "gi", "cefpython3",
+    # tokenizers depends on huggingface-hub for from_pretrained(), which we
+    # never call (models load from local files); none of these are imported.
+    "huggingface_hub", "hf_xet", "fsspec", "tqdm",
     # dev-only
-    "pytest", "httpx", "IPython",
+    "pytest", "httpx", "httpx2", "IPython",
 ]
 
 a = Analysis(

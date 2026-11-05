@@ -48,7 +48,7 @@ Download `Kaynakca-Kontrol-Sistemi-Setup-<version>.exe` from [Releases](https://
 
 ## Development
 
-Requirements: Python 3.12 with [uv](https://docs.astral.sh/uv/), Node 22+. Windows is needed for the real window; everything else also runs on Linux and macOS.
+Requirements: Python 3.14 with [uv](https://docs.astral.sh/uv/) (pinned in `.python-version`), Node 22.12+ (CI uses Node 26 LTS), Inno Setup 6.5+ for the installer. Windows is needed for the real window; everything else also runs on Linux and macOS.
 
 ```bash
 cd frontend && npm ci && npm run build && cd ..

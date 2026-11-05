@@ -16,6 +16,9 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     target: 'es2022',
+    // Desktop app served from localhost: big chunks (pdf.js, fontkit) cost
+    // nothing over the network, so don't warn about them.
+    chunkSizeWarningLimit: 1500,
   },
   server: {
     // `npm run dev`: the dev UI talks to a backend started with

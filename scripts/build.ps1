@@ -16,7 +16,7 @@
     7. Portable zip (+ portable.txt marker)          -> packaging/dist/Kaynakca-Kontrol-Sistemi-<v>-portable.zip
     8. SHA256SUMS (verified by the in-app updater)   -> packaging/dist/SHA256SUMS
 
-  Requirements: Node 22+, uv, Inno Setup 6 (iscc on PATH or in the default
+  Requirements: Node 22.12+, uv, Inno Setup 6.5+ (iscc on PATH or in the default
   install location). The NER model is NOT bundled: it is downloaded once per
   machine by the installer or the app.
 

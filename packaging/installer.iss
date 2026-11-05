@@ -21,6 +21,10 @@
 ;   * /SILENT /RELAUNCH (used by the in-app updater) restarts the app after
 ;     installing.
 
+#if VER < EncodeVer(6, 5, 0)
+  #error Inno Setup 6.5 or newer is required (CopyFile, current Pascal Script API).
+#endif
+
 #include "build\app.iss"
 
 #if ModelFileCount != 3
@@ -222,7 +226,7 @@ begin
       Exit;
     if CompareText(GetSHA256OfFile(Source + '\' + ModelFileName(I)), ModelFileSha(I)) <> 0 then
       Exit;
-    if not FileCopy(Source + '\' + ModelFileName(I), ModelDir() + '\' + ModelFileName(I), False) then
+    if not CopyFile(Source + '\' + ModelFileName(I), ModelDir() + '\' + ModelFileName(I), False) then
       Exit;
   end;
   Result := True;
@@ -291,7 +295,7 @@ begin
   ForceDirectories(ModelDir());
   for I := 0 to {#ModelFileCount} - 1 do
     if FileExists(ExpandConstant('{tmp}\') + ModelFileName(I)) then
-      FileCopy(ExpandConstant('{tmp}\') + ModelFileName(I), ModelDir() + '\' + ModelFileName(I), False);
+      CopyFile(ExpandConstant('{tmp}\') + ModelFileName(I), ModelDir() + '\' + ModelFileName(I), False);
   for I := 0 to {#ModelFileCount} - 1 do
     if not FileExists(ModelDir() + '\' + ModelFileName(I)) then
       Exit;

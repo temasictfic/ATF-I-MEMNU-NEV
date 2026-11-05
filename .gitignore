@@ -33,3 +33,4 @@ logs/
 .playwright-mcp/
 test-fixtures/
 tests/ui/out/
+requirements-audit.txt

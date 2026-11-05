@@ -1,0 +1,31 @@
+# Weekly dependency update PRs. CI (lint, tests, audit, Windows build +
+# WebView2 smoke test) runs on each of them.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      python-minor:
+        update-types: [minor, patch]
+    ignore:
+      # Pinned on purpose: atfi_app/native uses pywebview's WinForms internals.
+      # Bump manually and check the Windows smoke test.
+      - dependency-name: pywebview
+
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
