@@ -1,9 +1,9 @@
 const fallbackRepo = {
   owner: "temasictfic",
-  repo: "Atf-I-Memnu"
+  repo: "ATF-I-MEMNU-NEV"
 };
 
-const technicalAssetPatterns = [/\.blockmap$/i, /^latest.*\.ya?ml$/i];
+const technicalAssetPatterns = [/\.blockmap$/i, /^latest.*\.ya?ml$/i, /^SHA256SUMS$/i];
 const endUserExtensionPattern = /\.(exe|msi|zip)$/i;
 
 function inferRepoFromLocation() {

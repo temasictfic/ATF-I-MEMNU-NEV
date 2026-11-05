@@ -19,7 +19,7 @@ Bu doküman, atıf doğrulama sürecinin **uçtan uca** nasıl çalıştığın�
         PDF
          │
          ▼
-   source text  (Electron renderer'da pdf.js ile çıkartılır —
+   source text  (WebView2 içindeki React arayüzünde pdf.js ile çıkartılır —
                     backend artık PDF'e hiç dokunmuyor)
          │
          ▼
@@ -401,7 +401,7 @@ Kaynak: [verification_orchestrator.py:248–415](backend/services/verification_o
 
 ## 9. Tier 2 — Google Scholar (kullanıcı tetikli, webview)
 
-Tier 1 yetersiz kalan kaynaklar için Electron webview üzerinden `scholar.google.com` taraması. Backend HTTP ile gitmez — gerçek tarayıcı oturumu kullanılır (CAPTCHA + cookie nedeniyle).
+Tier 1 yetersiz kalan kaynaklar için yerel WebView2 görünümü (`<atfi-webview>`) üzerinden `scholar.google.com` taraması. Backend HTTP ile gitmez — gerçek tarayıcı oturumu kullanılır (CAPTCHA + cookie nedeniyle).
 
 ### Frontend akışı ([scholar-scanner.ts](src/renderer/src/lib/services/scholar-scanner.ts))
 

@@ -32,3 +32,4 @@ logs/
 .idea/
 .playwright-mcp/
 test-fixtures/
+tests/ui/out/

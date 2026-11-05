@@ -1,0 +1,62 @@
+name: Build and Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: astral-sh/setup-uv@v8.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Check tag matches atfi_app/version.py
+        shell: pwsh
+        run: |
+          $version = (uv run python scripts/release_tools.py version).Trim()
+          if ("v$version" -ne "$env:GITHUB_REF_NAME") { throw "Tag $env:GITHUB_REF_NAME does not match version $version" }
+
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup -y --no-progress
+          }
+
+      - name: Build
+        shell: pwsh
+        run: ./scripts/build.ps1
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "packaging/dist/KaynakcaKontrolSistemi/KaynakcaKontrolSistemi.exe" -ArgumentList "--smoke-test", "`"$PWD/smoke.png`"" -PassThru -Wait
+          if ($p.ExitCode -ne 0) { Get-Content "$env:LOCALAPPDATA/atfi-memnu-app/logs/app.log" -Tail 80; throw "smoke test failed" }
+
+      # The in-app updater downloads Kaynakca-Kontrol-Sistemi-Setup-<v>.exe and
+      # verifies it against SHA256SUMS; both must be attached to the release.
+      - name: Create release and upload artifacts
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            packaging/dist/*.exe packaging/dist/*.zip packaging/dist/SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

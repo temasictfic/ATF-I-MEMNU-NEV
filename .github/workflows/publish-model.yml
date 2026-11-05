@@ -1,0 +1,45 @@
+name: Publish NER model
+
+# One-off (per model version): publishes the citation NER model files as
+# assets of the release `model-<name>-<version>` on this repository, which is
+# the primary download source in atfi_app/model_manifest.json. Files are
+# fetched from the manifest's mirror and SHA-256 verified before upload.
+# Until this has run, installers and the app fall back to that mirror.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v8.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Download + verify model files
+        id: fetch
+        run: |
+          uv sync --frozen
+          out=$(uv run python scripts/release_tools.py model-assets model-assets | tail -n1)
+          echo "tag=$(echo "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag"])')" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update the model release
+        shell: bash
+        run: |
+          tag="${{ steps.fetch.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" model-assets/* --clobber
+          else
+            gh release create "$tag" model-assets/* \
+              --title "Citation NER model ($tag)" \
+              --notes "Downloaded once per machine by the installer / app (see atfi_app/model_manifest.json). Not an app release." \
+              --latest=false
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
