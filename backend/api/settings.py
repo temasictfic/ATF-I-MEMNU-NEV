@@ -9,7 +9,7 @@ from services.openaire_token_manager import (
     get_runtime_status,
     invalidate_cache,
 )
-from services.settings_store import get_current_settings, save_settings
+from services.settings_store import get_current_settings, save_settings_async
 
 router = APIRouter()
 
@@ -80,7 +80,7 @@ async def update_settings(patch: dict[str, Any]):
         except Exception:  # noqa: BLE001, S110
             pass
 
-    save_settings(new_settings)
+    await save_settings_async(new_settings)
     return new_settings.model_dump()
 
 
@@ -117,7 +117,7 @@ async def update_database(db_id: str, req: DatabaseToggleRequest):
         if db.id == db_id:
             dbs[i] = db.model_copy(update={"enabled": req.enabled})
             new_settings = previous.model_copy(update={"databases": dbs})
-            save_settings(new_settings)
+            await save_settings_async(new_settings)
             return new_settings.model_dump()
     return previous.model_dump()
 
@@ -141,7 +141,7 @@ async def reorder_database(req: DatabaseReorderRequest):
         else:
             dbs.insert(after_idx + 1, moved)
     new_settings = previous.model_copy(update={"databases": dbs})
-    save_settings(new_settings)
+    await save_settings_async(new_settings)
     return new_settings.model_dump()
 
 
@@ -152,7 +152,7 @@ async def remove_database(db_id: str):
     if len(new_dbs) == len(previous.databases):
         return previous.model_dump()
     new_settings = previous.model_copy(update={"databases": new_dbs})
-    save_settings(new_settings)
+    await save_settings_async(new_settings)
     return new_settings.model_dump()
 
 
@@ -185,7 +185,7 @@ async def validate_openaire_token(payload: OpenaireValidateRequest):
         "api_keys": updated_keys,
         "openaire_token_saved_at": datetime.now(timezone.utc).date().isoformat(),
     })
-    save_settings(updated)
+    await save_settings_async(updated)
     invalidate_cache()
 
     return {"valid": True, "settings": updated.model_dump()}
@@ -212,6 +212,6 @@ async def disconnect_openaire():
         "api_keys": updated_keys,
         "openaire_token_saved_at": "",
     })
-    save_settings(updated)
+    await save_settings_async(updated)
     invalidate_cache()
     return updated.model_dump()

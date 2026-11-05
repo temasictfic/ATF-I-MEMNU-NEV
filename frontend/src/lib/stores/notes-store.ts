@@ -163,17 +163,34 @@ export function getNotes(pdfId: string): Note[] {
   return useNotesStore.getState().notesByPdf[pdfId] ?? []
 }
 
-export function addNote(note: Omit<Note, 'id' | 'createdAt'>): Note {
-  const full: Note = {
+function makeNote(note: Omit<Note, 'id' | 'createdAt'>): Note {
+  return {
     ...note,
     id: `note_${note.pdfId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     createdAt: Date.now(),
   }
+}
+
+export function addNote(note: Omit<Note, 'id' | 'createdAt'>): Note {
+  return addNotes([note])[0]
+}
+
+// Add several notes in one store update (auto-notes adds hundreds; one
+// addNote per note copied the list each time).
+export function addNotes(notes: Omit<Note, 'id' | 'createdAt'>[]): Note[] {
+  const full = notes.map(makeNote)
+  if (full.length === 0) return full
   useNotesStore.setState(state => {
-    const list = state.notesByPdf[full.pdfId] ?? []
-    return {
-      notesByPdf: { ...state.notesByPdf, [full.pdfId]: [...list, full] },
+    const notesByPdf = { ...state.notesByPdf }
+    const copied = new Set<string>()
+    for (const n of full) {
+      if (!copied.has(n.pdfId)) {
+        notesByPdf[n.pdfId] = [...(state.notesByPdf[n.pdfId] ?? [])]
+        copied.add(n.pdfId)
+      }
+      notesByPdf[n.pdfId].push(n)
     }
+    return { notesByPdf }
   })
   return full
 }

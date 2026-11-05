@@ -42,7 +42,10 @@ def events(monkeypatch):
 
     monkeypatch.setattr(orch.manager, "broadcast", broadcast)
     monkeypatch.setattr(orch.manager, "send_log", send_log)
-    monkeypatch.setattr(orch, "save_verify_cache", lambda *a, **k: None)
+    async def no_save(*a, **k):
+        pass
+
+    monkeypatch.setattr(orch, "save_verify_cache_async", no_save)
     return sent
 
 
@@ -97,8 +100,14 @@ def test_cancel_all_stops_batch_before_next_pdf(monkeypatch) -> None:
         pass
 
     monkeypatch.setattr(orch, "verify_pdf_sources_filtered", fake_verify)
-    monkeypatch.setattr(api_verification, "_load_sources_or_empty", lambda pid: [_source("x", pid)])
-    monkeypatch.setattr(api_verification, "save_verify_cache", lambda *a, **k: None)
+    async def load(pid):
+        return [_source("x", pid)]
+
+    async def no_save(*a, **k):
+        pass
+
+    monkeypatch.setattr(api_verification, "_load_sources_or_empty", load)
+    monkeypatch.setattr(api_verification, "save_verify_cache_async", no_save)
     monkeypatch.setattr(api_verification.manager, "send_log", send_log)
     verify_jobs["jobB"] = {"status": "running", "pdfs": ["p1", "p2", "p3"]}
     asyncio.run(api_verification._verify_batch("jobB", ["p1", "p2", "p3"], {}, set()))
@@ -308,3 +317,95 @@ def test_openaire_failure_status_resets_on_new_token(monkeypatch) -> None:
     assert status["status"] == "failed" and status["last_error"] == "invalid_grant"
     otm.invalidate_cache()  # what connect / disconnect do
     assert otm.get_runtime_status() == {"status": "never", "last_attempt_at_ms": None, "last_error": None}
+
+
+# --- performance: Crossref variant walk -------------------------------------------
+
+
+def _crossref_source():
+    from models.source import ParsedSource
+
+    return ParsedSource(
+        raw_text="Smith, J. (2020). Deep things. Journal of Applied Widgets, 3, 1-2.",
+        title="Deep things", authors=["Smith, J."], year=2020,
+        journal="Journal of Applied Widgets", parse_confidence=0.9,
+    )
+
+
+@pytest.mark.parametrize(("scores", "expected_calls"), [([0.4] * 8, 5), ([0.4, 1.0, 0.9], 2)])
+def test_crossref_variant_walk(monkeypatch, scores, expected_calls) -> None:
+    from models.verification_result import MatchResult
+    from verifiers import crossref
+
+    calls: list[dict[str, str]] = []
+
+    async def fake_fetch(session, params, source):
+        calls.append(params)
+        return MatchResult(database="crossref", score=scores[len(calls) - 1])
+
+    monkeypatch.setattr(crossref, "_fetch_best_match", fake_fetch)
+    monkeypatch.setattr(crossref, "get_session", lambda: None)
+    best = asyncio.run(crossref.search(_crossref_source()))
+    assert len(calls) == expected_calls
+    assert best is not None and best.score == max(scores[:expected_calls])
+    optional = {"query.container-title", "query.author", "filter"}
+    assert set(calls[0]) >= optional  # most constrained first
+    if expected_calls == 5:
+        assert not set(calls[-1]) & optional  # bare title last
+        assert len({tuple(sorted(c)) for c in calls}) == 5  # no duplicates
+
+
+# --- performance: cache and settings I/O off the event loop ----------------------
+
+
+def test_async_cache_io_round_trip_and_cancel_merge(tmp_path, monkeypatch) -> None:
+    from config import settings as app_config
+    from services import cache_store
+
+    monkeypatch.setattr(type(app_config), "get_cache_dir", lambda self: tmp_path)
+    pdf = "a1" * 8
+    disk = {
+        "s1": VerificationResult(source_id="s1", status="medium"),
+        "s2": VerificationResult(source_id="s2", status="high"),
+    }
+    live = {
+        "s1": VerificationResult(source_id="s1", status="high"),
+        "s2": VerificationResult(source_id="s2", status="in_progress"),
+    }
+
+    async def scenario():
+        # Writes issued back to back land in call order (newest wins).
+        await asyncio.gather(*(
+            cache_store.save_verify_cache_async(pdf, {"s1": VerificationResult(source_id="s1", status=st)})
+            for st in ("low", "low", "medium")
+        ))
+        assert (await cache_store.load_verify_cache_async(pdf))["s1"].status == "medium"
+        await cache_store.save_verify_cache_async(pdf, disk)
+        # Cancel path: settled rows win, a running row keeps its disk entry.
+        await cache_store.merge_into_verify_cache(pdf, cache_store.snapshot_settled(live))
+        return await cache_store.load_verify_cache_async(pdf)
+
+    merged = asyncio.run(scenario())
+    assert {k: v.status for k, v in merged.items()} == {"s1": "high", "s2": "high"}
+
+
+def test_save_settings_async_writes_newest(tmp_path, monkeypatch) -> None:
+    import json
+
+    from config import settings as app_config
+    from services import settings_store
+
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(type(app_config), "get_settings_path", lambda self: path)
+    base = settings_store.get_current_settings()
+    monkeypatch.setattr(settings_store, "_current_settings", base)  # restored afterwards
+
+    async def scenario():
+        await asyncio.gather(*(
+            settings_store.save_settings_async(base.model_copy(update={"search_timeout": t}))
+            for t in (11, 12, 13)
+        ))
+
+    asyncio.run(scenario())
+    assert settings_store.get_current_settings().search_timeout == 13
+    assert json.loads(path.read_text(encoding="utf-8"))["search_timeout"] == 13

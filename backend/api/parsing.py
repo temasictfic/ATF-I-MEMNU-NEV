@@ -15,13 +15,18 @@ modules instead of cross-importing api.verification breaks the parsing↔
 verification cycle that this module used to be half of.
 """
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 from models.source import SourceRectangle
 from pydantic import BaseModel
 from services.cache_store import (
-    clean_verify_cache,
-    flip_sources_status,
+    _validate_pdf_id,
+    clean_verify_cache_async,
+    flip_sources_status_async,
+    io_lock,
     load_sources_cache,
+    load_sources_cache_async,
     save_sources_cache,
 )
 from services.job_store import verify_results
@@ -65,7 +70,7 @@ async def get_sources(pdf_id: str):
     # Returns 200 with `cached=false` when no cache entry exists, rather
     # than 404, so the client's orchestrator can do a "check before parse"
     # without producing red network errors in devtools.
-    cached = load_sources_cache(pdf_id)
+    cached = await load_sources_cache_async(pdf_id)
     if cached is None:
         return {"sources": [], "cached": False}
     sources, numbered, page_count = cached
@@ -87,22 +92,8 @@ async def update_sources(pdf_id: str, request: UpdateSourcesRequest):
     # wins, then any previous cache entry, else False. Same precedence for
     # `page_count` so plain source-edit saves don't blank out the cached
     # page count.
-    prev = load_sources_cache(pdf_id)
-    if request.numbered is not None:
-        numbered = request.numbered
-    else:
-        numbered = prev[1] if prev is not None else False
-
-    if request.page_count is not None:
-        page_count = request.page_count
-    else:
-        page_count = prev[2] if prev is not None else None
-
-    save_sources_cache(pdf_id, request.sources, numbered, page_count)
-
-    # Clean stale verify results for removed/renumbered sources.
+    _validate_pdf_id(pdf_id)
     current_ids = {s.id for s in request.sources}
-    clean_verify_cache(pdf_id, current_ids)
     # Stop verification still running (or queued) for removed sources, and
     # prune the *existing* results dict in place: running tasks write into it,
     # so replacing it with a new dict let them bring removed sources back.
@@ -110,12 +101,33 @@ async def update_sources(pdf_id: str, request: UpdateSourcesRequest):
     removed = retire_sources(pdf_id, current_ids, set(pdf_results))
     for key in removed:
         pdf_results.pop(key, None)
+
+    def merge_and_save() -> None:
+        prev = load_sources_cache(pdf_id)
+        if request.numbered is not None:
+            numbered = request.numbered
+        else:
+            numbered = prev[1] if prev is not None else False
+
+        if request.page_count is not None:
+            page_count = request.page_count
+        else:
+            page_count = prev[2] if prev is not None else None
+
+        save_sources_cache(pdf_id, request.sources, numbered, page_count)
+
+    # Read-modify-write under the file's lock, off the event loop.
+    async with io_lock(f"sources:{pdf_id}"):
+        await asyncio.to_thread(merge_and_save)
+
+    # Clean stale verify results for removed/renumbered sources.
+    await clean_verify_cache_async(pdf_id, current_ids)
     return {"success": True}
 
 
 @router.post("/parse/approve/{pdf_id}")
 async def approve_pdf(pdf_id: str):
-    if not flip_sources_status(pdf_id, "approved"):
+    if not await flip_sources_status_async(pdf_id, "approved"):
         raise HTTPException(status_code=404, detail="PDF not found")
     await manager.broadcast("parse_approved", {"pdf_id": pdf_id})
     await manager.send_log("success", f"Sources approved for {pdf_id}", pdf_id=pdf_id)
@@ -124,7 +136,7 @@ async def approve_pdf(pdf_id: str):
 
 @router.post("/parse/unapprove/{pdf_id}")
 async def unapprove_pdf(pdf_id: str):
-    if not flip_sources_status(pdf_id, "detected"):
+    if not await flip_sources_status_async(pdf_id, "detected"):
         raise HTTPException(status_code=404, detail="PDF not found")
     await manager.broadcast("parse_unapproved", {"pdf_id": pdf_id})
     await manager.send_log("info", f"Approval revoked for {pdf_id}", pdf_id=pdf_id)

@@ -8,6 +8,7 @@ The FastAPI router still lives in ``api.settings`` and delegates the
 persistence + accessor calls here.
 """
 
+import asyncio
 import json
 
 from config import settings as app_config
@@ -124,3 +125,26 @@ def save_settings(s: AppSettings) -> None:
     settings_path = app_config.get_settings_path()
     atomic_write_text(settings_path, s.model_dump_json(indent=2))
     _current_settings = s
+
+
+_write_lock: asyncio.Lock | None = None
+_pending_json: str | None = None
+
+
+async def save_settings_async(s: AppSettings) -> None:
+    """Like :func:`save_settings`, with the file write off the event loop.
+
+    The in-memory settings change immediately, so a read-modify-write that
+    does not await in between stays atomic. Writes go out in call order;
+    when several pile up only the newest is written.
+    """
+    global _current_settings, _write_lock, _pending_json
+    _current_settings = s
+    _pending_json = s.model_dump_json(indent=2)
+    if _write_lock is None:
+        _write_lock = asyncio.Lock()
+    async with _write_lock:
+        text, _pending_json = _pending_json, None
+        if text is None:
+            return  # an earlier caller already wrote this (or newer) state
+        await asyncio.to_thread(atomic_write_text, app_config.get_settings_path(), text)

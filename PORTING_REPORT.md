@@ -178,15 +178,39 @@ These change behaviour or need a bigger refactor, so they were left alone.
 ### Performance
 
 - **VerificationPage (≈3,300 lines)** subscribes to whole store maps with no `useShallow` and no memoized card component. Every `verify_db_checked` WebSocket event re-renders the whole page, even on another tab.
+  - ✅ **Fixed:**
+    - Cards are a memoized `SourceCard` with stable props and callbacks.
+    - The page subscribes to the selected PDF's results, its sources' progress, and a per-PDF overview (`pdf-overview.ts`) whose entries keep their identity until a count or running flag changes. Other PDFs' events no longer re-render it.
+    - The store applies WebSocket updates once per frame (below).
+    - Measured on a 48-source run (every database failing fast, same harness before and after): React commits 965 → about 190, main-thread script time 7.7 s → 0.9 s.
 - **ParsingPage** renders NotesLayer and source boxes for every page (only the canvases are virtualized). Drags and scrolling set state on every event.
+  - ✅ **Fixed:**
+    - Notes and source boxes are mounted only for the visible pages, plus the selected source's and note's pages so a drag in progress is never unmounted. On an 8-page test PDF, 0 of 48 boxes are mounted at the top and 24 at the bottom.
+    - Sources and notes are grouped by page once instead of filtered per page per render.
+    - Scrolling only sets state when the set of visible pages changes.
+    - Drags still update on every move.
 - **The PDF is read and parsed up to 3 times** per import/view/export.
+  - ✅ **Fixed:**
+    - Import loads the PDF through the document cache, so the viewer reuses that pdf.js document instead of reading and parsing the file again.
+    - A cached import that only needs the page count no longer parses the text.
+    - The viewed document is pinned, so importing a folder can't evict it.
+    - Export still reads the file once for pdf-lib. Keeping the bytes of every cached PDF would double their memory for one local read.
 - **O(n²) result accumulation** per PDF, and per-note copies in auto-notes.
+  - ✅ **Fixed:**
+    - The high-frequency events (started, db checking/checked, source done) are queued and applied once per frame. Each map is copied once per batch and a PDF's counts are recomputed once per batch, instead of per event.
+    - Every other store write flushes the queue first, so ordering is unchanged.
+    - Auto-notes adds all notes in one store update (`addNotes`).
 - **Backend:**
   - synchronous disk I/O on the event loop (cache/settings);
   - `inspect.signature` per verifier call;
   - the verifier registry is rebuilt per source;
   - Crossref makes up to 8 query variants per source at 1 req/s.
+  - ✅ **Fixed:**
+    - Cache and settings files are read and written in a worker thread, with one lock per file so operations on a file stay in call order. Read-modify-write sequences hold the lock throughout, and settings writes coalesce to the newest.
+    - The signature check and the verifier registry are cached.
+    - Crossref tries the full query, then each filter dropped on its own, then the bare title (at most 5 requests instead of 8). It stops as soon as a result saturates at score 1.0, since nothing later can beat it.
 - **ONNX** uses `intra_op_num_threads = 1`, although inference is already serialized on one worker. Raising it to the number of physical cores would speed up NER.
+  - ✔️ **Decided:** left as is.
 
 ### Security hardening
 

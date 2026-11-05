@@ -4,19 +4,20 @@ import i18n from '../../i18n'
 import { usePdfStore } from '../../stores/pdf-store'
 import { useSourcesStore, loadSources as loadSourcesFn } from '../../stores/sources-store'
 import { useVerificationStore } from '../../stores/verification-store'
+import { useShallow } from 'zustand/react/shallow'
+import { selectPdfOverview } from './pdf-overview'
 import { useSettingsStore } from '../../stores/settings-store'
 import { useScholarScanStore } from '../../stores/scholar-scan-store'
 import { scholarScanner, PROBE_PAGE_STATE_SCRIPT, buildSearchUrl } from '../../services/scholar-scanner'
-import type { VerificationResult, MatchResult, DbCheckEntry, TagKey } from '../../api/types'
+import type { VerificationResult, MatchResult, SourceVerifyProgress } from '../../api/types'
 import { api } from '../../api/rest-client'
-import { TAG_ORDER, effectiveTagOn, effectiveDecisionTag } from '../../verification/tagState'
+import { effectiveDecisionTag } from '../../verification/tagState'
 import { computeExclusion } from '../../verification/exclusion'
 import { sanitizeSourceText, sanitizeSourceTextForSearch } from '../../utils/source-text'
 import { buildDefaultSavePath } from '../../utils/path'
 import {
   dbScoreColor,
   dbScoreIcon,
-  verifyStatusColor as statusColor,
 } from '../../utils/status-helpers'
 import { STATUS_HEX, DECISION_HEX } from '../../constants/colors'
 import {
@@ -28,24 +29,8 @@ import {
 } from '../../constants/timings'
 import styles from './VerificationPage.module.css'
 import { hostAPI } from '../../host/bridge'
-
-function problemTagDescription(tag: string): string {
-  switch (tag) {
-    case '!authors': return i18n.t('verification.problemDesc.authors')
-    case '!doi/arXiv': return i18n.t('verification.problemDesc.doi')
-    case '!year': return i18n.t('verification.problemDesc.year')
-    case '!journal': return i18n.t('verification.problemDesc.journal')
-    case '!title': return i18n.t('verification.problemDesc.title')
-    default: return tag
-  }
-}
-
-function problemTagLabel(tag: string): string {
-  const key = `verification.problemTag.${tag}`
-  const translated = i18n.t(key)
-  return translated === key ? tag : translated
-}
-
+import { problemTagLabel } from './problem-tags'
+import { SourceCard, type SourceCardActions } from './SourceCard'
 
 function googleSearchUrl(text: string): string {
   const cleaned = sanitizeSourceTextForSearch(text)
@@ -73,6 +58,8 @@ function buildDbSearchUrl(db: string, text: string): string {
   }
   return urls[db] ?? ''
 }
+
+const EMPTY_RESULTS: Record<string, VerificationResult> = {}
 
 const statusOrder: Record<string, number> = { high: 0, medium: 1, low: 2, in_progress: 3, pending: 4 }
 type CardSortMode = 'status' | 'ref' | 'enabled' | 'decision' | 'manual'
@@ -124,10 +111,10 @@ export default function VerificationPage() {
 
   const sourcesByPdf = useSourcesStore(s => s.sourcesByPdf)
 
-  const resultsByPdf = useVerificationStore(s => s.resultsByPdf)
-  const priorResultsByPdf = useVerificationStore(s => s.priorResultsByPdf)
+  // Narrow subscriptions: whole-map selectors re-rendered the page on every
+  // WebSocket event of every PDF. See pdf-overview.ts.
+  const pdfOverview = useVerificationStore(useShallow(selectPdfOverview))
   const summaries = useVerificationStore(s => s.summaries)
-  const sourceProgress = useVerificationStore(s => s.sourceProgress)
   const selectedSourceId = useVerificationStore(s => s.selectedSourceId)
   const verifyTexts = useVerificationStore(s => s.verifyTexts)
   const sourceOriginalTexts = useVerificationStore(s => s.sourceOriginalTexts)
@@ -161,8 +148,15 @@ export default function VerificationPage() {
     () => (selectedPdfId && pdfs.some(p => p.id === selectedPdfId) ? selectedPdfId : null),
     [selectedPdfId, pdfs],
   )
-  const results = useMemo(() => (effectivePdfId ? (resultsByPdf[effectivePdfId] ?? {}) : {}), [resultsByPdf, effectivePdfId])
+  const pdfResults = useVerificationStore(s => (effectivePdfId ? s.resultsByPdf[effectivePdfId] : undefined))
+  const results = pdfResults ?? EMPTY_RESULTS
   const sources = useMemo(() => (effectivePdfId ? (sourcesByPdf[effectivePdfId] ?? []) : []), [sourcesByPdf, effectivePdfId])
+  // Progress of this PDF's sources only (stable while other PDFs run).
+  const sourceProgress = useVerificationStore(useShallow(s => {
+    const out: Record<string, SourceVerifyProgress | undefined> = {}
+    for (const src of sources) out[src.id] = s.sourceProgress[src.id]
+    return out
+  }))
   const currentResult = useMemo(() => (selectedSourceId ? results[selectedSourceId] : undefined), [results, selectedSourceId])
   const currentSource = useMemo(() => (selectedSourceId ? sources.find(s => s.id === selectedSourceId) : undefined), [sources, selectedSourceId])
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -176,11 +170,7 @@ export default function VerificationPage() {
   // Selected-PDF running state for the top export button. Summary completion
   // flips immediately on start, and the live results scan catches any PDF that
   // is already showing in_progress rows.
-  const isVerificationRunning = useMemo(() => {
-    if (!effectivePdfId) return false
-    const pdfResults = resultsByPdf[effectivePdfId] ?? {}
-    return Object.values(pdfResults).some(r => r.status === 'in_progress')
-  }, [effectivePdfId, resultsByPdf])
+  const isVerificationRunning = effectivePdfId ? (pdfOverview[effectivePdfId]?.running ?? false) : false
   const orderedSourceIds = useMemo(() => (effectivePdfId ? (sourceOrder[effectivePdfId] ?? []) : []), [sourceOrder, effectivePdfId])
 
   // Sort-dropdown open state + click-outside wiring
@@ -454,61 +444,9 @@ export default function VerificationPage() {
   // --- Left panel sorting (persisted in store) ---
   const { togglePdfSort } = useVerificationStore.getState()
 
-  // Per-PDF display counts for both match (high/medium/low) and decision
-  // (valid/citation/fabricated) pills. For sources currently in_progress,
-  // fall back to their priorResultsByPdf snapshot if one exists — this
-  // makes counts update smoothly during a re-verify of a partially or
-  // fully verified PDF: each completing source replaces its snapshot's
-  // contribution with its new result, instead of dragging the totals to
-  // zero on optimistic in_progress and climbing back up. For first-time
-  // verifies (no snapshot), in_progress sources contribute nothing,
-  // matching the previous live-from-summary behaviour.
-  const displayCountsByPdf = useMemo(() => {
-    const out: Record<string, {
-      high: number
-      medium: number
-      low: number
-      valid: number
-      citation: number
-      fabricated: number
-    }> = {}
-    for (const pdfId of Object.keys(resultsByPdf)) {
-      const pdfResults = resultsByPdf[pdfId] ?? {}
-      const priorMap = priorResultsByPdf[pdfId] ?? {}
-      let high = 0, medium = 0, low = 0
-      let valid = 0, citation = 0, fabricated = 0
-      for (const [sourceId, r] of Object.entries(pdfResults)) {
-        // Pick the "effective" result: settled current result wins,
-        // otherwise the pre-rerun snapshot, otherwise nothing.
-        let eff: typeof r | undefined
-        if (r.status === 'high' || r.status === 'medium' || r.status === 'low') {
-          eff = r
-        } else if (r.status === 'in_progress' && priorMap[sourceId]) {
-          eff = priorMap[sourceId]
-        }
-        if (!eff) continue
-        if (eff.status === 'high') high++
-        else if (eff.status === 'medium') medium++
-        else if (eff.status === 'low') low++
-        // Skip cancelled-with-no-data rows so the Fabricated pill doesn't
-        // inflate to the full ref count after a Stop on a partially-completed
-        // run. Pre-Edit-A cache files can still carry these; post-Edit-A
-        // cancel deletes the entry so this guard becomes redundant for new
-        // data but stays safe for the rest.
-        if (
-          eff.status === 'low'
-          && !eff.best_match
-          && (eff.databases_searched?.length ?? 0) === 0
-        ) continue
-        const tt = effectiveDecisionTag(eff)
-        if (tt === 'valid') valid++
-        else if (tt === 'citation') citation++
-        else if (tt === 'fabricated') fabricated++
-      }
-      out[pdfId] = { high, medium, low, valid, citation, fabricated }
-    }
-    return out
-  }, [resultsByPdf, priorResultsByPdf])
+  // Per-PDF display counts for the match (high/medium/low) and decision
+  // (valid/citation/fabricated) pills; see pdf-overview.ts.
+  const displayCountsByPdf = pdfOverview
 
   const sortedPdfs = useMemo(() => {
     // Free mode: read order from pdfOrder, append any new PDFs at the end,
@@ -543,9 +481,9 @@ export default function VerificationPage() {
         // When there are no in-progress PDFs (the typical state when the user
         // first clicks the sort button) untouched lands at the top.
         const tier = (pdfId: string, s: typeof sa) => {
-          const pdfRes = resultsByPdf[pdfId]
-          const running = pdfRes
-            ? Object.values(pdfRes).some(r => r.status === 'in_progress')
+          const overview = pdfOverview[pdfId]
+          const running = overview
+            ? overview.running
             : (s?.in_progress ?? 0) > 0
           if (running) return 3
           if (!s) return 2
@@ -565,7 +503,7 @@ export default function VerificationPage() {
       return 0
     })
     return list
-  }, [pdfs, pdfSortKey, pdfSortAsc, pdfOrder, summaries, displayCountsByPdf, resultsByPdf])
+  }, [pdfs, pdfSortKey, pdfSortAsc, pdfOrder, summaries, displayCountsByPdf, pdfOverview])
 
   // --- Center panel sorting (persisted in store) ---
   const { toggleCardSort } = useVerificationStore.getState()
@@ -765,20 +703,15 @@ export default function VerificationPage() {
   }, [])
 
   // Compute running state for toggle buttons
-  const isAnyVerifying = useMemo(() => {
-    for (const pdfResults of Object.values(resultsByPdf)) {
-      for (const r of Object.values(pdfResults)) {
-        if (r.status === 'in_progress') return true
-      }
-    }
-    return false
-  }, [resultsByPdf])
+  const isAnyVerifying = useMemo(
+    () => Object.values(pdfOverview).some(o => o.running),
+    [pdfOverview],
+  )
 
-  const isPdfVerifying = useCallback((pdfId: string) => {
-    const pdfResults = resultsByPdf[pdfId]
-    if (!pdfResults) return false
-    return Object.values(pdfResults).some(r => r.status === 'in_progress')
-  }, [resultsByPdf])
+  const isPdfVerifying = useCallback(
+    (pdfId: string) => pdfOverview[pdfId]?.running ?? false,
+    [pdfOverview],
+  )
 
   // Actions
   async function handleStartOrCancel(mode: 'all' | 'nonHigh' = 'all') {
@@ -945,7 +878,16 @@ export default function VerificationPage() {
 
   // When a single-source reverify finishes, trigger a per-source Scholar scan
   // for every settled status when the automatic Scholar setting is enabled.
+  // Re-runs when a pending source's status changes (not on every event).
+  const pendingGsKey = useVerificationStore(s => {
+    let key = ''
+    for (const [sourceId, pdfId] of pendingSingleSourceGsRef.current) {
+      key += `${sourceId}:${s.resultsByPdf[pdfId]?.[sourceId]?.status ?? ''};`
+    }
+    return key
+  })
   useEffect(() => {
+    const { resultsByPdf } = useVerificationStore.getState()
     for (const [sourceId, pdfId] of Array.from(pendingSingleSourceGsRef.current)) {
       const r = resultsByPdf[pdfId]?.[sourceId]
       if (!r || r.status === 'in_progress') continue
@@ -955,7 +897,7 @@ export default function VerificationPage() {
         scheduleScholarStart(sourceId, () => useScholarScanStore.getState().startScanForSource(pdfId, sourceId))
       }
     }
-  }, [resultsByPdf])
+  }, [pendingGsKey, scheduleScholarStart])
 
   async function handleOverride(status: 'high' | 'medium' | 'low') {
     if (!effectivePdfId || !selectedSourceId || !currentResult) return
@@ -1116,7 +1058,7 @@ export default function VerificationPage() {
 
   async function handleExportVerificationReport() {
     if (!effectivePdfId) return
-    const pdfResults = resultsByPdf[effectivePdfId]
+    const pdfResults = useVerificationStore.getState().resultsByPdf[effectivePdfId]
     if (!pdfResults || Object.keys(pdfResults).length === 0) {
       window.alert(t('verification.exportPdfNoResults'))
       return
@@ -1161,7 +1103,7 @@ export default function VerificationPage() {
     const effectiveCutoff = Math.min(verifyCutoffIndex, sortedPdfs.length)
     const aboveBar = sortedPdfs.slice(0, effectiveCutoff)
     const candidates = aboveBar.filter(
-      p => Object.keys(resultsByPdf[p.id] ?? {}).length > 0,
+      p => pdfOverview[p.id]?.hasResults ?? false,
     )
     if (candidates.length === 0) {
       window.alert(t('verification.exportPdfBatchNothing'))
@@ -1250,6 +1192,51 @@ export default function VerificationPage() {
     const promoted = filteredSourceCards[idx]
     return [promoted, ...filteredSourceCards.slice(0, idx), ...filteredSourceCards.slice(idx + 1)]
   }, [filteredSourceCards, promotedSourceId])
+
+  // Card callbacks: one stable object (so memoized cards don't re-render
+  // because a handler was re-created), delegating to the latest closures.
+  const cardActionsImplRef = useRef<SourceCardActions | null>(null)
+  cardActionsImplRef.current = {
+    registerRef: (sourceId, el) => { cardRefs.current[sourceId] = el },
+    select: (sourceId) => selectSource(sourceId),
+    toggleEnabled: (sourceId) => { selectSource(sourceId); toggleSourceEnabled(sourceId) },
+    resetText: (sourceId) => { selectSource(sourceId); resetVerifyText(sourceId) },
+    setText: (sourceId, text) => setVerifyText(sourceId, text),
+    toggleTag: (sourceId, tag) => {
+      selectSource(sourceId)
+      if (!effectivePdfId || !results[sourceId]) return
+      pendingScrollCardIdRef.current = sourceId
+      useVerificationStore.getState().toggleTag(effectivePdfId, sourceId, tag)
+    },
+    cycleDecision: (sourceId) => {
+      selectSource(sourceId)
+      if (!effectivePdfId) return
+      pendingScrollCardIdRef.current = sourceId
+      useVerificationStore.getState().cycleDecisionTag(effectivePdfId, sourceId)
+    },
+    dragStart: onDragStart,
+    dragOver: onDragOver,
+    drop: onDrop,
+    dragEnd: onDragEnd,
+    autoResize,
+  }
+  const cardActions = useMemo<SourceCardActions>(() => {
+    const impl = () => cardActionsImplRef.current!
+    return {
+      registerRef: (...a) => impl().registerRef(...a),
+      select: (...a) => impl().select(...a),
+      toggleEnabled: (...a) => impl().toggleEnabled(...a),
+      resetText: (...a) => impl().resetText(...a),
+      setText: (...a) => impl().setText(...a),
+      toggleTag: (...a) => impl().toggleTag(...a),
+      cycleDecision: (...a) => impl().cycleDecision(...a),
+      dragStart: (...a) => impl().dragStart(...a),
+      dragOver: (...a) => impl().dragOver(...a),
+      drop: (...a) => impl().drop(...a),
+      dragEnd: () => impl().dragEnd(),
+      autoResize: (...a) => impl().autoResize(...a),
+    }
+  }, [])
 
   // Find-in-page (Ctrl+F) state for the overlay webview
   const [findBarOpen, setFindBarOpen] = useState(false)
@@ -2291,8 +2278,7 @@ export default function VerificationPage() {
               if (i === effectiveCutoff) nodes.push(renderDivider())
               const summary = summaries[pdf.id]
               const pdfVerifying = isPdfVerifying(pdf.id)
-              const pdfResults = resultsByPdf[pdf.id] ?? {}
-              const hasPdfResults = Object.keys(pdfResults).length > 0
+              const hasPdfResults = pdfOverview[pdf.id]?.hasResults ?? false
               // displayCountsByPdf folds in priorResultsByPdf snapshots so
               // the pills update smoothly during a re-verify of an already-
               // (partly-)settled PDF: each completing source replaces its
@@ -2321,6 +2307,7 @@ export default function VerificationPage() {
                   onContextMenu={(e) => {
                     e.preventDefault()
                     if (!pdfVerifying) return
+                    const pdfResults = useVerificationStore.getState().resultsByPdf[pdf.id] ?? {}
                     const order =
                       useVerificationStore.getState().sourceOrder[pdf.id]
                       ?? useSourcesStore.getState().sourcesByPdf[pdf.id]?.map(s => s.id)
@@ -2500,260 +2487,27 @@ export default function VerificationPage() {
             {/* Source cards */}
             <div className={styles['card-list']} ref={cardListRef} data-scrollable>
               {displayedSourceCards.map((card, idx) => {
-                const isSelected = selectedSourceId === card.source.id
-                const isMuaf = card.exclusion.excluded
-                const cardClass = [
-                  styles['source-card'],
-                  isSelected ? styles['card-selected'] : '',
-                  isMuaf ? styles['card-disabled'] : '',
-                  dropTargetIdx === idx && dragSourceId !== card.source.id ? styles['card-dragover'] : '',
-                ].filter(Boolean).join(' ')
-
-                // Tint the selected-border per decision state (Valid/Citation/Fabricated).
-                const decision = card.result ? effectiveDecisionTag(card.result) : null
-                const decisionBorderColor =
-                  decision === 'valid' ? DECISION_HEX.validBorder
-                  : decision === 'citation' ? DECISION_HEX.citationBorder
-                  : decision === 'fabricated' ? DECISION_HEX.fabricatedBorder
-                  : undefined
-                const decisionGlow =
-                  decision === 'valid' ? 'rgba(134, 239, 172, 0.35)'
-                  : decision === 'citation' ? 'rgba(148, 163, 184, 0.35)'
-                  : decision === 'fabricated' ? 'rgba(232, 121, 249, 0.35)'
-                  : undefined
-
+                const id = card.source.id
+                const edited = verifyTexts[id]
+                const original = sourceOriginalTexts[id]
                 return (
-                  <div
-                    key={card.source.id}
-                    ref={(el) => { cardRefs.current[card.source.id] = el }}
-                    className={cardClass}
-                    style={decisionBorderColor ? {
-                      ['--card-decision-border' as string]: decisionBorderColor,
-                      ['--card-decision-glow' as string]: decisionGlow,
-                    } as React.CSSProperties : undefined}
-                    role="button"
-                    tabIndex={0}
-                    aria-pressed={isSelected}
-                    onClick={() => selectSource(isSelected ? null : card.source.id)}
-                    onKeyDown={(e) => {
-                      if (e.currentTarget !== e.target) return
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        selectSource(isSelected ? null : card.source.id)
-                      }
-                    }}
-                    onDragOver={(e) => onDragOver(e, idx)}
-                    onDrop={(e) => onDrop(e, card.source.id)}
-                  >
-                    {/* Status bar */}
-                    <div className={styles['status-bar']} style={{ background: statusColor(card.result) }} />
-
-                    <div className={styles['card-body']}>
-                      {/* Header row */}
-                      <div className={styles['card-header']}>
-                        <button
-                          type="button"
-                          className={`${styles['ref-badge']} ${isMuaf ? styles['ref-badge-disabled'] : ''}`}
-                          aria-pressed={!isMuaf}
-                          title={card.enabled ? t('verification.disableRef') : t('verification.enableRef')}
-                          onClick={(e) => { e.stopPropagation(); selectSource(card.source.id); toggleSourceEnabled(card.source.id) }}
-                        >
-                          [{card.source.ref_number ?? '?'}]
-                        </button>
-                        {isMuaf ? (
-                          <span
-                            className={styles['status-badge']}
-                            style={{ background: '#9ca3af', color: 'white' }}
-                            title={card.exclusion.reason}
-                          >
-                            {t('verification.muaf')}
-                          </span>
-                        ) : card.result?.status === 'in_progress' ? (
-                          <span className={styles['status-badge']} style={{ background: STATUS_HEX.in_progress, color: 'white' }}>
-                            {i18n.t('verification.status.in_progress')}
-                          </span>
-                        ) : null}
-                        <span className={styles['card-actions']}>
-                          <button
-                            className={styles['copy-btn']}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              selectSource(card.source.id)
-                              const text = verifyTexts[card.source.id] ?? sanitizeSourceText(card.source.text)
-                              navigator.clipboard.writeText(text)
-                            }}
-                            title={t('verification.copyText')}
-                          >
-                            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                              <rect x="5.5" y="5.5" width="9" height="9" rx="1.5" />
-                              <path d="M10.5 5.5V3a1.5 1.5 0 00-1.5-1.5H3A1.5 1.5 0 001.5 3v6A1.5 1.5 0 003 10.5h2.5" />
-                            </svg>
-                          </button>
-                          {verifyTexts[card.source.id] != null && sourceOriginalTexts[card.source.id] != null && verifyTexts[card.source.id] !== sourceOriginalTexts[card.source.id] && (
-                            <button
-                              className={styles['reset-btn']}
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                selectSource(card.source.id)
-                                resetVerifyText(card.source.id)
-                              }}
-                              title={t('verification.resetToOriginal')}
-                            >&#x21BA;</button>
-                          )}
-                        </span>
-                        <span className={styles['card-status-group']}>
-                          {card.result && (
-                            <span className={styles['problem-tags']}>
-                              {TAG_ORDER.map((tag: TagKey) => {
-                                const on = effectiveTagOn(card.result, tag)
-                                const isTitle = tag === 'title'
-                                const titleSim = card.result?.best_match?.match_details?.title_similarity ?? 0
-                                const titleGood = isTitle && titleSim >= 0.85
-                                const baseClass = isTitle
-                                  ? (titleGood ? styles['title-tag-good'] : styles['title-tag'])
-                                  : styles['problem-tag']
-                                const offClass = isTitle ? styles['title-tag-off'] : styles['problem-tag-off']
-                                const className = on ? baseClass : offClass
-                                const onToggle = (e: React.MouseEvent) => {
-                                  e.stopPropagation()
-                                  selectSource(card.source.id)
-                                  if (!effectivePdfId || !card.result) return
-                                  pendingScrollCardIdRef.current = card.source.id
-                                  useVerificationStore.getState().toggleTag(effectivePdfId, card.source.id, tag)
-                                }
-                                if (isTitle) {
-                                  const bm = card.result?.best_match
-                                  const pct = bm ? Math.round(bm.match_details.title_similarity * 100) : null
-                                  const label = pct != null
-                                    ? `${t('verification.titleShort')}: ${pct}%`
-                                    : `${t('verification.titleShort')}: —`
-                                  const tip = on ? problemTagDescription('!title') : undefined
-                                  return (
-                                    <button key={tag} type="button" className={className} onClick={onToggle} title={tip}>
-                                      {label}
-                                    </button>
-                                  )
-                                }
-                                const bangKey = `!${tag}`
-                                const tip = on ? problemTagDescription(bangKey) : undefined
-                                return (
-                                  <button key={tag} type="button" className={className} onClick={onToggle} title={tip}>
-                                    {problemTagLabel(bangKey)}
-                                  </button>
-                                )
-                              })}
-                            </span>
-                          )}
-                          {card.result && (() => {
-                            const decision = effectiveDecisionTag(card.result)
-                            const cls = decision === 'valid'
-                              ? styles['valid-tag']
-                              : decision === 'citation'
-                                ? styles['citation-tag']
-                                : styles['fabricated-tag']
-                            const label = decision === 'valid'
-                              ? t('verification.validTag')
-                              : decision === 'citation'
-                                ? t('verification.citationTag')
-                                : t('verification.fabricatedTag')
-                            const tip = decision === 'valid'
-                              ? t('verification.validTagTooltip')
-                              : decision === 'citation'
-                                ? t('verification.citationTagTooltip')
-                                : t('verification.fabricatedTagTooltip')
-                            return (
-                              <button
-                                type="button"
-                                className={cls}
-                                title={tip}
-                                onClick={(e) => {
-                                  e.stopPropagation()
-                                  selectSource(card.source.id)
-                                  if (!effectivePdfId) return
-                                  pendingScrollCardIdRef.current = card.source.id
-                                  useVerificationStore.getState().cycleDecisionTag(effectivePdfId, card.source.id)
-                                }}
-                              >
-                                {label}
-                              </button>
-                            )
-                          })()}
-                        </span>
-                      </div>
-
-                      {/* Textarea row — drag handle on the left, vertically centered */}
-                      <div className={styles['card-body-row']}>
-                        <span
-                          className={[
-                            styles['drag-handle'],
-                            browserOverlayOpen ? styles['drag-handle-disabled'] : '',
-                          ].filter(Boolean).join(' ')}
-                          draggable={!browserOverlayOpen}
-                          onDragStart={(e) => {
-                            if (browserOverlayOpen) { e.preventDefault(); return }
-                            e.stopPropagation(); onDragStart(e, card.source.id)
-                          }}
-                          onDragEnd={onDragEnd}
-                          onPointerDown={(e) => e.stopPropagation()}
-                          title={t('verification.dragToReorder')}
-                          aria-hidden="true"
-                        >&#x2807;</span>
-                        <textarea
-                          className={styles['card-textarea']}
-                          value={verifyTexts[card.source.id] ?? sanitizeSourceText(card.source.text)}
-                          onInput={(e) => {
-                            const el = e.target as HTMLTextAreaElement
-                            setVerifyText(card.source.id, el.value)
-                            autoResize(el)
-                          }}
-                          onFocus={(e) => { selectSource(card.source.id); autoResize(e.target as HTMLTextAreaElement) }}
-                          onClick={(e) => { e.stopPropagation(); selectSource(card.source.id) }}
-                          rows={2}
-                          disabled={isMuaf}
-                        />
-                      </div>
-
-                      {/* Progress indicator */}
-                      {card.progress && (card.result?.status === 'in_progress' || card.progress.checkedDbs.length > 0) && (
-                        <div className={styles['card-progress']}>
-                          {card.result?.status === 'in_progress' && (
-                            <span className={styles['progress-spinner']}>&#x25CC;</span>
-                          )}
-                          <span className={styles['progress-text']}>
-                            {card.progress.currentDb
-                              ? t('verification.status.searchingDb', { db: card.progress.currentDb })
-                              : card.result?.status === 'in_progress'
-                                ? t('verification.status.waiting')
-                                : (() => {
-                                    const actuallySearched = card.progress!.checkedDbs.filter((d: DbCheckEntry) => d.status !== 'skipped').length
-                                    const skippedCount = card.progress!.checkedDbs.filter((d: DbCheckEntry) => d.status === 'skipped').length
-                                    return skippedCount > 0
-                                      ? t('verification.status.searchedCountWithSkipped', { count: actuallySearched, skipped: skippedCount })
-                                      : t('verification.status.searchedCount', { count: actuallySearched })
-                                  })()}
-                          </span>
-                          <div className={styles['progress-dots']}>
-                            {enabledDatabases.map(db => {
-                              const check = card.progress?.checkedDbs.find((d: DbCheckEntry) => d.name === db)
-                              const isCurrent = card.progress?.currentDb === db
-                              const dotClass = [
-                                styles['progress-dot'],
-                                check ? styles[`dot-${check.status}`] : '',
-                                isCurrent ? styles['dot-current'] : '',
-                              ].filter(Boolean).join(' ')
-                              return (
-                                <span
-                                  key={db}
-                                  className={dotClass}
-                                  title={`${db}${check ? `: ${check.status}${check.errorMessage ? ` — ${check.errorMessage}` : ''}` : ''}`}
-                                />
-                              )
-                            })}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                  <SourceCard
+                    key={id}
+                    source={card.source}
+                    result={card.result}
+                    progress={card.progress}
+                    idx={idx}
+                    isSelected={selectedSourceId === id}
+                    isMuaf={card.exclusion.excluded}
+                    enabled={card.enabled}
+                    exclusionReason={card.exclusion.excluded ? card.exclusion.reason : undefined}
+                    isDropTarget={dropTargetIdx === idx && dragSourceId !== id}
+                    text={edited ?? sanitizeSourceText(card.source.text)}
+                    showReset={edited != null && original != null && edited !== original}
+                    enabledDatabases={enabledDatabases}
+                    dragDisabled={browserOverlayOpen}
+                    actions={cardActions}
+                  />
                 )
               })}
             </div>

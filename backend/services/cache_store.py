@@ -15,6 +15,7 @@ Two cache families:
   shape produced by :func:`_serialise_result`.
 """
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -199,12 +200,19 @@ def _serialise_result(r: VerificationResult) -> dict:
     return payload
 
 
+def _verify_payload(results: dict[str, VerificationResult]) -> dict:
+    return {sid: _serialise_result(r) for sid, r in list(results.items())}
+
+
+def _write_verify_payload(pdf_id: str, data: dict) -> None:
+    cache_file = _safe_cache_path(f"verify_{pdf_id}.json")
+    atomic_write_text(cache_file, json.dumps(data, ensure_ascii=False))
+
+
 def save_verify_cache(pdf_id: str, results: dict[str, VerificationResult]) -> None:
     """Persist verification results to disk cache."""
     _validate_pdf_id(pdf_id)
-    cache_file = _safe_cache_path(f"verify_{pdf_id}.json")
-    data = {sid: _serialise_result(r) for sid, r in results.items()}
-    atomic_write_text(cache_file, json.dumps(data, ensure_ascii=False))
+    _write_verify_payload(pdf_id, _verify_payload(results))
 
 
 def _hydrate_match(entry: dict, parsed_title: str) -> tuple[MatchResult, bool]:
@@ -267,3 +275,92 @@ def clean_verify_cache(pdf_id: str, current_source_ids: set[str]) -> None:
             atomic_write_text(cache_file, json.dumps(cleaned, ensure_ascii=False))
     except Exception:  # noqa: BLE001, S110
         pass
+
+
+# ---------------------------------------------------------------------------
+# Async wrappers: file I/O off the event loop
+# ---------------------------------------------------------------------------
+#
+# The endpoints and the orchestrator are coroutines, and each cache write
+# fsyncs (slow on Windows), so the plain helpers above stalled every other
+# request and WebSocket event while they ran. These run the disk part in a
+# worker thread. One lock per file keeps reads and writes of the same file in
+# call order, which the synchronous version got for free; callers that read,
+# modify and write a file hold the lock across all three.
+
+_io_locks: dict[str, asyncio.Lock] = {}
+
+
+def io_lock(key: str) -> asyncio.Lock:
+    """Lock for one cache file: ``sources:<pdf_id>`` or ``verify:<pdf_id>``."""
+    lock = _io_locks.get(key)
+    if lock is None:
+        lock = _io_locks[key] = asyncio.Lock()
+    return lock
+
+
+async def load_sources_cache_async(pdf_id: str):
+    _validate_pdf_id(pdf_id)
+    async with io_lock(f"sources:{pdf_id}"):
+        return await asyncio.to_thread(load_sources_cache, pdf_id)
+
+
+async def load_sources_for_pdf_async(pdf_id: str) -> list[SourceRectangle] | None:
+    _validate_pdf_id(pdf_id)
+    async with io_lock(f"sources:{pdf_id}"):
+        return await asyncio.to_thread(load_sources_for_pdf, pdf_id)
+
+
+async def flip_sources_status_async(pdf_id: str, new_status: SourceStatus) -> bool:
+    _validate_pdf_id(pdf_id)
+    async with io_lock(f"sources:{pdf_id}"):
+        return await asyncio.to_thread(flip_sources_status, pdf_id, new_status)
+
+
+async def save_verify_cache_async(pdf_id: str, results: dict[str, VerificationResult]) -> None:
+    """Snapshot ``results`` now (on the loop: results are mutated in place),
+    write it in a worker thread."""
+    _validate_pdf_id(pdf_id)
+    data = _verify_payload(results)
+    async with io_lock(f"verify:{pdf_id}"):
+        await asyncio.to_thread(_write_verify_payload, pdf_id, data)
+
+
+async def load_verify_cache_async(pdf_id: str) -> dict[str, VerificationResult] | None:
+    _validate_pdf_id(pdf_id)
+    async with io_lock(f"verify:{pdf_id}"):
+        return await asyncio.to_thread(load_verify_cache, pdf_id)
+
+
+async def clean_verify_cache_async(pdf_id: str, current_source_ids: set[str]) -> None:
+    _validate_pdf_id(pdf_id)
+    async with io_lock(f"verify:{pdf_id}"):
+        await asyncio.to_thread(clean_verify_cache, pdf_id, current_source_ids)
+
+
+def snapshot_settled(results: dict[str, VerificationResult]) -> dict:
+    """Serialise the settled (high/medium/low) rows of ``results`` now."""
+    return _verify_payload({sid: r for sid, r in list(results.items()) if r.status in ("high", "medium", "low")})
+
+
+async def merge_into_verify_cache(pdf_id: str, snapshot: dict) -> None:
+    """Write a :func:`snapshot_settled` snapshot over the disk cache, keeping
+    disk rows for sources that are not in it (still running)."""
+    _validate_pdf_id(pdf_id)
+    async with io_lock(f"verify:{pdf_id}"):
+
+        def merge_and_write() -> None:
+            cache_file = _safe_cache_path(f"verify_{pdf_id}.json")
+            data: dict = {}
+            if cache_file.exists():
+                try:
+                    loaded = json.loads(cache_file.read_text(encoding="utf-8"))
+                    if isinstance(loaded, dict):
+                        data = loaded
+                except Exception:  # noqa: BLE001, S110
+                    pass
+            data.update(snapshot)
+            if data:
+                _write_verify_payload(pdf_id, data)
+
+        await asyncio.to_thread(merge_and_write)

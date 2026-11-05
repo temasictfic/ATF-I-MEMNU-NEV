@@ -1,6 +1,7 @@
 """Orchestrate parallel verification of sources across multiple academic databases."""
 
 import asyncio
+import functools
 import inspect
 import logging
 from typing import Any
@@ -13,7 +14,7 @@ from scrapers.rate_limiter import rate_limiter
 from utils.text_cleaning import strip_source_noise
 from verifiers._http import RateLimitedError, UnauthorizedError
 
-from services.cache_store import save_verify_cache
+from services.cache_store import save_verify_cache_async
 from services.match_scorer import (
     classify_decision,
     determine_verification_status,
@@ -160,12 +161,50 @@ def _query_for(parsed: ParsedSource) -> str:
     return parsed.title or parsed.raw_text[:200]
 
 
+@functools.cache
 def _supports_api_key_argument(search_fn: Any) -> bool:
-    """Check whether a verifier accepts an ``api_key`` keyword argument."""
+    """Check whether a verifier accepts an ``api_key`` keyword argument.
+
+    Cached: ``inspect.signature`` is slow and the answer never changes.
+    """
     try:
         return "api_key" in inspect.signature(search_fn).parameters
     except (TypeError, ValueError):
         return False
+
+
+@functools.cache
+def _verifier_registry() -> dict[str, tuple[str, Any]]:
+    """Database id → (display name, search function), built once.
+
+    Imported lazily (the verifier modules pull in aiohttp helpers) and
+    cached instead of being rebuilt for every source.
+    """
+    from verifiers.arxiv import search as arxiv_search
+    from verifiers.base import search as base_search
+    from verifiers.crossref import search as crossref_search
+    from verifiers.europe_pmc import search as europe_pmc_search
+    from verifiers.open_library import search as open_library_search
+    from verifiers.openaire import search as openaire_search
+    from verifiers.openalex import search as openalex_search
+    from verifiers.pubmed import search as pubmed_search
+    from verifiers.semantic_scholar import search as semantic_search
+    from verifiers.trdizin import search as trdizin_search
+    from verifiers.wos import search as wos_search
+
+    return {
+        "crossref": ("Crossref", crossref_search),
+        "openalex": ("OpenAlex", openalex_search),
+        "openaire": ("OpenAIRE", openaire_search),
+        "arxiv": ("arXiv", arxiv_search),
+        "semantic_scholar": ("Semantic Scholar", semantic_search),
+        "europe_pmc": ("Europe PMC", europe_pmc_search),
+        "trdizin": ("TRDizin", trdizin_search),
+        "pubmed": ("PubMed", pubmed_search),
+        "open_library": ("Open Library", open_library_search),
+        "base": ("BASE", base_search),
+        "wos": ("Web of Science", wos_search),
+    }
 
 
 def _db_park_cleared(db_id: str) -> bool:
@@ -297,7 +336,7 @@ async def verify_pdf_sources(
 
         # Persist results to disk cache
         try:
-            save_verify_cache(pdf_id, results)
+            await save_verify_cache_async(pdf_id, results)
         except Exception:  # noqa: BLE001, S110
             pass
 
@@ -349,7 +388,7 @@ async def verify_single_source(
 
     # Persist updated results to disk cache
     try:
-        save_verify_cache(pdf_id, results)
+        await save_verify_cache_async(pdf_id, results)
     except Exception:  # noqa: BLE001, S110
         pass
 
@@ -599,32 +638,7 @@ async def _run_tier1_apis(
     main-pass search raised ``TimeoutError`` — so callers can drive the
     retry phase without re-deriving that state from event logs.
     """
-    from verifiers.arxiv import search as arxiv_search
-    from verifiers.base import search as base_search
-    from verifiers.crossref import search as crossref_search
-    from verifiers.europe_pmc import search as europe_pmc_search
-    from verifiers.open_library import search as open_library_search
-    from verifiers.openaire import search as openaire_search
-    from verifiers.openalex import search as openalex_search
-    from verifiers.pubmed import search as pubmed_search
-    from verifiers.semantic_scholar import search as semantic_search
-    from verifiers.trdizin import search as trdizin_search
-    from verifiers.wos import search as wos_search
-
-    # Map database id → (display name, search function)
-    verifier_registry = {
-        "crossref": ("Crossref", crossref_search),
-        "openalex": ("OpenAlex", openalex_search),
-        "openaire": ("OpenAIRE", openaire_search),
-        "arxiv": ("arXiv", arxiv_search),
-        "semantic_scholar": ("Semantic Scholar", semantic_search),
-        "europe_pmc": ("Europe PMC", europe_pmc_search),
-        "trdizin": ("TRDizin", trdizin_search),
-        "pubmed": ("PubMed", pubmed_search),
-        "open_library": ("Open Library", open_library_search),
-        "base": ("BASE", base_search),
-        "wos": ("Web of Science", wos_search),
-    }
+    verifier_registry = _verifier_registry()
 
     # Build verifier list in the order defined by user settings. The
     # optional ``restricted_db_ids`` filter is how the retry pass asks

@@ -51,12 +51,29 @@ function destroyEntry(entry: PdfDocumentEntry, context: string): void {
   })
 }
 
+// The document the viewer is showing. Imports also load through this cache
+// (so the viewer reuses their parse), and importing a folder must not evict
+// and destroy the document on screen.
+let pinnedPath: string | null = null
+
+/** Keep `localPath` (the viewed PDF) out of LRU eviction; `null` unpins. */
+export function pinDocument(localPath: string | null): void {
+  pinnedPath = localPath
+  evictIfNeeded()
+}
+
 function evictIfNeeded(): void {
   while (cache.size > MAX_CACHED_DOCS) {
-    const oldestKey = cache.keys().next().value as string | undefined
-    if (!oldestKey) return
-    const oldest = cache.get(oldestKey)
-    cache.delete(oldestKey)
+    let victim: string | undefined
+    for (const key of cache.keys()) {
+      if (key !== pinnedPath) {
+        victim = key
+        break
+      }
+    }
+    if (!victim) return
+    const oldest = cache.get(victim)
+    cache.delete(victim)
     if (oldest) {
       destroyEntry(oldest, 'evict')
     }

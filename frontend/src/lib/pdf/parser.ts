@@ -27,31 +27,23 @@ interface TextItemBbox {
   isBold: boolean
 }
 
-// Parse a PDF file from its raw bytes.
+// Parse an already-loaded PDF (from document-cache, so the viewer reuses the
+// same pdf.js document instead of reading and parsing the file again).
 //
 // `id` is the caller-supplied identifier (filename stem, matching backend).
 // `name` and `path` are stored on the result for parity with the backend
-// PdfDocument model but are not interpreted here.
-export async function parsePdf(
-  bytes: Uint8Array,
+// PdfDocument model but are not interpreted here. The document is not
+// destroyed or `cleanup()`-ed here: the cache owns it and the viewer may be
+// rendering it. Each page releases its own resources after parsing.
+export async function parseDocument(
+  doc: PDFDocumentProxy,
   { id, name, path }: { id: string; name: string; path: string }
 ): Promise<ParsedPdf> {
-  const pdfjsLib = getPdfjs()
-  const loadingTask = pdfjsLib.getDocument({ data: bytes })
-  const doc: PDFDocumentProxy = await loadingTask.promise
-
-  try {
-    const pages: PageContent[] = []
-    for (let pageNum = 0; pageNum < doc.numPages; pageNum++) {
-      pages.push(await parsePage(doc, pageNum))
-    }
-
-    await doc.cleanup()
-
-    return { id, name, path, pages }
-  } finally {
-    await loadingTask.destroy()
+  const pages: PageContent[] = []
+  for (let pageNum = 0; pageNum < doc.numPages; pageNum++) {
+    pages.push(await parsePage(doc, pageNum))
   }
+  return { id, name, path, pages }
 }
 
 async function parsePage(doc: PDFDocumentProxy, pageIndex: number): Promise<PageContent> {

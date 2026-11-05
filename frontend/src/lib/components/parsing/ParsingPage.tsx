@@ -33,7 +33,7 @@ import {
 import type { SourceRectangle, PageData, ParsedSource } from "../../api/types";
 import { api } from "../../api/rest-client";
 import { extractTextInBbox } from "../../pdf/extract-text";
-import { getOrLoadDocument } from "../../pdf/document-cache";
+import { getOrLoadDocument, pinDocument } from "../../pdf/document-cache";
 import {
   addNote,
   beginNoteEdit,
@@ -65,6 +65,9 @@ import { HIGHLIGHT_PALETTE_HEX } from "../../constants/colors";
 import { PARSE_FIELD_DEBOUNCE_MS } from "../../constants/timings";
 import styles from "./ParsingPage.module.css";
 import { hostAPI } from "../../host/bridge";
+
+// Stable empty list so NotesLayer props don't change identity per render.
+const EMPTY_NOTES: never[] = [];
 
 const statusOrder: Record<string, number> = {
   approved: 0,
@@ -344,16 +347,23 @@ export default function ParsingPage() {
     return list;
   }, [allPdfs, sortKey, sortAsc, loading]);
 
-  // Scroll-based virtualisation: only mount PdfPageCanvas for pages whose
-  // scaled bounds intersect the visible viewport (plus a 1-page buffer).
+  // Scroll-based virtualisation: only mount page canvases and overlays for
+  // pages whose scaled bounds intersect the visible viewport (plus a 1-page
+  // buffer). `scrollTop` state only changes when that set of pages changes,
+  // so scrolling within a page doesn't re-render the whole page tree.
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
+  const visibleKeyRef = useRef("");
+  const visibleKeyForScrollRef = useRef<(scrollTop: number) => string>(() => "");
 
   useEffect(() => {
     const el = viewerRef.current;
     if (!el) return;
     setViewportHeight(el.clientHeight);
-    const onScroll = () => setScrollTop(el.scrollTop);
+    const onScroll = () => {
+      const st = el.scrollTop;
+      if (visibleKeyForScrollRef.current(st) !== visibleKeyRef.current) setScrollTop(st);
+    };
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
   }, [selectedPdfId, pages.length, loadingPages]);
@@ -386,10 +396,10 @@ export default function ParsingPage() {
   // Determine which page indices are within the visible scroll viewport
   // (plus a 1-page buffer above/below) so we can skip rendering off-screen
   // pages entirely.
-  const visiblePageIndices = useMemo(() => {
+  const computeVisiblePages = (top: number): Set<number> => {
     if (pages.length === 0 || viewportHeight === 0) return new Set<number>();
-    const vTop = scrollTop / scale;
-    const vBottom = (scrollTop + viewportHeight) / scale;
+    const vTop = top / scale;
+    const vBottom = (top + viewportHeight) / scale;
     const visible = new Set<number>();
     for (let i = 0; i < pages.length; i++) {
       const pTop = pageOffsets[i];
@@ -402,6 +412,15 @@ export default function ParsingPage() {
         visible.add(i);
       }
     }
+    return visible;
+  };
+  visibleKeyForScrollRef.current = (top) => [...computeVisiblePages(top)].join(",");
+  const visiblePageIndices = useMemo(() => {
+    // The live scroll position: `scrollTop` state lags while scrolling
+    // within the same set of pages, and zooming changes the set without a
+    // scroll event.
+    const visible = computeVisiblePages(viewerRef.current?.scrollTop ?? scrollTop);
+    visibleKeyRef.current = [...visible].join(",");
     return visible;
   }, [pages, pageOffsets, scrollTop, viewportHeight, scale]);
 
@@ -465,6 +484,7 @@ export default function ParsingPage() {
   useEffect(() => {
     return () => {
       setPdfDoc(null);
+      pinDocument(null);
     };
   }, []);
 
@@ -504,6 +524,7 @@ export default function ParsingPage() {
       if (isStale() || usePdfStore.getState().selectedPdfId !== pdfId) {
         return;
       }
+      pinDocument(localPath);
 
       // Uniform-page fast path. If the first and last pages match (the
       // common case for academic papers), every page uses the first-page
@@ -735,25 +756,58 @@ export default function ParsingPage() {
     saveSources(selectedPdfId);
   }
 
+  // Sources, continuation boxes and notes grouped by page once per change,
+  // instead of filtering every list for every page on every render.
+  const overlaysByPage = useMemo(() => {
+    const sourcesOn = new Map<number, SourceRectangle[]>();
+    const extrasOn = new Map<
+      number,
+      { source: SourceRectangle; bbox: SourceRectangle["bbox"] }[]
+    >();
+    const notesOn = new Map<number, typeof notes>();
+    const push = <T,>(m: Map<number, T[]>, k: number, v: T) => {
+      const list = m.get(k);
+      if (list) list.push(v);
+      else m.set(k, [v]);
+    };
+    for (const s of sources) {
+      push(sourcesOn, s.bbox.page, s);
+      for (const bb of s.bboxes ?? []) {
+        if (bb.page !== s.bbox.page) push(extrasOn, bb.page, { source: s, bbox: bb });
+      }
+    }
+    for (const n of notes) push(notesOn, n.pageNum, n);
+    return { sourcesOn, extrasOn, notesOn };
+  }, [sources, notes]);
+
   function sourcesForPage(pageNum: number): SourceRectangle[] {
-    return sources.filter((s) => s.bbox.page === pageNum);
+    return overlaysByPage.sourcesOn.get(pageNum) ?? [];
   }
 
   function extraBboxesForPage(
     pageNum: number,
   ): { source: SourceRectangle; bbox: SourceRectangle["bbox"] }[] {
-    const result: { source: SourceRectangle; bbox: SourceRectangle["bbox"] }[] =
-      [];
-    for (const s of sources) {
-      if (s.bboxes && s.bboxes.length > 0) {
-        for (const bb of s.bboxes) {
-          if (bb.page === s.bbox.page) continue;
-          if (bb.page === pageNum) result.push({ source: s, bbox: bb });
-        }
-      }
-    }
-    return result;
+    return overlaysByPage.extrasOn.get(pageNum) ?? [];
   }
+
+  // Overlays (notes, source boxes) are mounted for the visible pages, plus
+  // the pages of the selected source and note so a drag in progress is never
+  // unmounted when its page scrolls away.
+  const overlayPageNums = useMemo(() => {
+    const nums = new Set<number>();
+    for (const idx of visiblePageIndices) {
+      const page = pages[idx];
+      if (page) nums.add(page.page_num);
+    }
+    const selSource = selectedSourceId ? sources.find((s) => s.id === selectedSourceId) : undefined;
+    if (selSource) {
+      nums.add(selSource.bbox.page);
+      for (const bb of selSource.bboxes ?? []) nums.add(bb.page);
+    }
+    const selNote = selectedNoteId ? notes.find((n) => n.id === selectedNoteId) : undefined;
+    if (selNote) nums.add(selNote.pageNum);
+    return nums;
+  }, [visiblePageIndices, pages, sources, selectedSourceId, notes, selectedNoteId]);
 
   // Zoom
   function zoomIn() {
@@ -1766,16 +1820,15 @@ export default function ParsingPage() {
                             zoom={scale}
                           />
                         )}
+                        {overlayPageNums.has(page.page_num) && (
                         <NotesLayer
                           // Notes are only visible while in notes mode, so
                           // they aren't cluttered by (or visually collide
                           // with) the yellow source-rectangle overlays.
                           notes={
                             activeNoteKind !== null
-                              ? notes.filter(
-                                  (n) => n.pageNum === page.page_num,
-                                )
-                              : []
+                              ? (overlaysByPage.notesOn.get(page.page_num) ?? EMPTY_NOTES)
+                              : EMPTY_NOTES
                           }
                           scale={scale}
                           activeKind={activeNoteKind}
@@ -1805,6 +1858,7 @@ export default function ParsingPage() {
                             if (selectedPdfId) beginNoteEdit(selectedPdfId);
                           }}
                         />
+                        )}
                       </div>
                     )}
                     {idx > 0 && (
@@ -1820,6 +1874,7 @@ export default function ParsingPage() {
                         notes mode so they don't intercept text-selection
                         drags or callout draws. */}
                     {activeNoteKind === null &&
+                      overlayPageNums.has(page.page_num) &&
                       sourcesForPage(page.page_num).map((source) => (
                       <div
                         key={source.id}
@@ -1852,6 +1907,7 @@ export default function ParsingPage() {
                     ))}
                     {/* Multi-page continuation bboxes — also hidden in notes mode. */}
                     {activeNoteKind === null &&
+                      overlayPageNums.has(page.page_num) &&
                       extraBboxesForPage(page.page_num).map(
                         ({ source, bbox }) => (
                           <div

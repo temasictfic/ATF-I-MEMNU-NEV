@@ -9,9 +9,9 @@
 
 import { api } from '../api/rest-client'
 import type { SourceRectangle } from '../api/types'
-import { parsePdf } from './parser'
+import { parseDocument } from './parser'
+import { getOrLoadDocument } from './document-cache'
 import { detectSources } from './source-detector'
-import { hostAPI } from '../host/bridge'
 
 export interface ParseOutcome {
   pdfId: string
@@ -99,19 +99,20 @@ export async function parseAndDetect(filePath: string): Promise<ParseOutcome> {
       }
     }
 
-    const bytes = await hostAPI.readPdfFile(filePath)
-    const parsed = await parsePdf(bytes, { id: pdfId, name, path: filePath })
+    // Loaded through document-cache: the viewer then reuses this pdf.js
+    // document instead of reading and parsing the file a second time.
+    const entry = await getOrLoadDocument(filePath)
 
     // Cache hit but no stored page count (older cache file written before
-    // page-count caching landed). Backfill it on this read so subsequent
-    // imports take the fast path above.
+    // page-count caching landed). Backfill it; the page count needs no text
+    // parse. Subsequent imports take the fast path above.
     if (cacheResult !== null) {
       try {
         await api.updateSources(
           pdfId,
           cacheResult.sources,
           cacheResult.numbered,
-          parsed.pages.length,
+          entry.numPages,
         )
       } catch (err) {
         console.warn(`[orchestrator] could not backfill page_count for ${pdfId}:`, err)
@@ -124,10 +125,11 @@ export async function parseAndDetect(filePath: string): Promise<ParseOutcome> {
         numbered: cacheResult.numbered,
         approved: cacheResult.approved,
         fromCache: true,
-        pageCount: parsed.pages.length,
+        pageCount: entry.numPages,
       }
     }
 
+    const parsed = await parseDocument(entry.doc, { id: pdfId, name, path: filePath })
     const { sources, numbered } = detectSources(parsed)
 
     // Persist freshly detected sources + numbered flag + page count to the

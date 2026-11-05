@@ -1,7 +1,6 @@
 """Crossref API verifier - DOI lookup and bibliographic search."""
 
 import re
-from itertools import combinations
 from typing import Any
 from urllib.parse import quote, quote_plus
 
@@ -115,32 +114,29 @@ async def search(source: ParsedSource) -> MatchResult | None:
         )
 
     session = get_session()
-    # Walk every subset of present {query.container-title, query.author,
-    # filter} keys, dropping fewest first. The full-params variant runs
-    # first; the bare-title fallback (all three dropped) runs last. Any
-    # absent keys silently shrink the search space.
+    # Variants, most constrained first: all present optional keys, then each
+    # one dropped on its own, then the bare title. Dropping two keys at once
+    # (the old full subset walk, up to 8 requests per source at 1 req/s)
+    # rarely found anything the single drops and the bare title missed.
     optional_keys = ("query.container-title", "query.author", "filter")
     present = [k for k in optional_keys if k in params]
+    drops: list[tuple[str, ...]] = [(), *((k,) for k in present), tuple(present)]
     variants: list[dict[str, str]] = []
-    for size in range(len(present) + 1):
-        for drop in combinations(present, size):
-            drop_set = set(drop)
-            variants.append({k: v for k, v in params.items() if k not in drop_set})
+    for drop in drops:
+        variant = {k: v for k, v in params.items() if k not in drop}
+        if variant not in variants:
+            variants.append(variant)
 
-    # Walk the variant list, but break out as soon as a variant lands a
-    # DOI-exact hit (score ≥ 0.95 with a URL/DOI match). That's the same
-    # threshold the orchestrator uses to cancel sibling verifiers, and
-    # it covers the common case where the very first variant already
-    # returns a perfect match via Crossref's own relevance ranker. On
-    # ambiguous sources where no variant crosses the bar, every
-    # variant still runs and the best scoring result wins — exactly the
-    # behaviour we had before, just skipped for the easy cases.
+    # Stop early when nothing later can win: a saturated score (1.0, and
+    # later results only replace a strictly higher one), or a DOI-exact hit
+    # (score >= 0.95 with a URL/DOI match, the orchestrator's sibling-cancel
+    # bar). Ambiguous sources still try every variant; the best result wins.
     best: MatchResult | None = None
     for variant in variants:
         result = await _fetch_best_match(session, variant, source)
         if result and (best is None or result.score > best.score):
             best = result
-        if best and best.score >= 0.95 and best.match_details.url_match:
+        if best and (best.score >= 1.0 or (best.score >= 0.95 and best.match_details.url_match)):
             break
 
     return best

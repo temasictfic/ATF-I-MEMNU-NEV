@@ -20,9 +20,11 @@ from models.verification_result import (
 )
 from pydantic import BaseModel
 from services.cache_store import (
-    load_sources_for_pdf,
-    load_verify_cache,
-    save_verify_cache,
+    load_sources_for_pdf_async,
+    load_verify_cache_async,
+    merge_into_verify_cache,
+    save_verify_cache_async,
+    snapshot_settled,
 )
 from services.background_tasks import spawn
 from services.job_store import verify_jobs, verify_results
@@ -71,9 +73,9 @@ async def start_batch_verification(request: VerifyBatchRequest):
     return {"job_id": job_id}
 
 
-def _load_sources_or_empty(pdf_id: str) -> list[SourceRectangle]:
+async def _load_sources_or_empty(pdf_id: str) -> list[SourceRectangle]:
     """Load cached sources for a PDF. Used everywhere pdf_store was used before."""
-    sources = load_sources_for_pdf(pdf_id)
+    sources = await load_sources_for_pdf_async(pdf_id)
     return sources if sources is not None else []
 
 
@@ -92,7 +94,7 @@ async def _verify_batch(job_id: str, pdf_ids: list[str], texts: dict[str, str], 
         for pid in pdf_ids:
             if batch_cancelled(job_id):
                 break
-            sources = _load_sources_or_empty(pid)
+            sources = await _load_sources_or_empty(pid)
             if not sources:
                 continue
             try:
@@ -107,7 +109,7 @@ async def _verify_batch(job_id: str, pdf_ids: list[str], texts: dict[str, str], 
         for pdf_id in pdf_ids:
             if verify_results.get(pdf_id):
                 try:
-                    save_verify_cache(pdf_id, verify_results[pdf_id])
+                    await save_verify_cache_async(pdf_id, verify_results[pdf_id])
                 except Exception as e:  # noqa: BLE001
                     await manager.send_log("error", f"Cache write failed for {pdf_id}: {e}")
 
@@ -124,7 +126,7 @@ async def _verify_batch(job_id: str, pdf_ids: list[str], texts: dict[str, str], 
 
 @router.post("/verify/source/{pdf_id}/{source_id}")
 async def reverify_source(pdf_id: str, source_id: str, request: VerifySourceRequest):
-    sources = _load_sources_or_empty(pdf_id)
+    sources = await _load_sources_or_empty(pdf_id)
     if not sources:
         raise HTTPException(status_code=404, detail="PDF not found")
 
@@ -181,30 +183,28 @@ async def _reverify_source_job(
         )
 
 
-def _persist_settled_for_pdf(pdf_id: str) -> None:
+async def _persist_settled(pdf_ids: list[str]) -> None:
     """Snapshot already-settled (high/medium/low) results to disk on cancel.
 
     Why: cancel endpoints used to return immediately and leave the disk write
     to the orchestrator's `finally` block. If the user closed the app between
     Stop and that finally running, partial results were lost. Saving here
-    synchronously closes that race.
+    closes that race.
 
     Merges in-memory settled rows over the existing disk state so we don't
     clobber prior-run results for sources that are currently in_progress
     (their disk entry stays). in_progress rows in memory are dropped — they'd
     otherwise be finalised to low/fabricated by the trailing CancelledError
     handlers, and writing those would inflate the Fabricated pill on reload.
+    All snapshots are taken before the first await, i.e. before any of those
+    handlers can run.
     """
-    in_mem = verify_results.get(pdf_id) or {}
-    if not in_mem:
-        return
-    merged = load_verify_cache(pdf_id) or {}
-    for sid, r in in_mem.items():
-        if r.status in ("high", "medium", "low"):
-            merged[sid] = r
-    if merged:
+    snapshots = {pid: snapshot_settled(verify_results.get(pid) or {}) for pid in pdf_ids}
+    for pid, snapshot in snapshots.items():
+        if not snapshot:
+            continue
         try:
-            save_verify_cache(pdf_id, merged)
+            await merge_into_verify_cache(pid, snapshot)
         except Exception:  # noqa: BLE001, S110
             pass
 
@@ -213,8 +213,7 @@ def _persist_settled_for_pdf(pdf_id: str) -> None:
 async def cancel_all_verification():
     from services.verification_orchestrator import cancel_all_active
     cancel_all_active()
-    for pid in list(verify_results.keys()):
-        _persist_settled_for_pdf(pid)
+    await _persist_settled(list(verify_results.keys()))
     await manager.send_log("info", "Verification cancelled by user")
     return {"success": True}
 
@@ -223,7 +222,7 @@ async def cancel_all_verification():
 async def cancel_pdf_verification(pdf_id: str):
     from services.verification_orchestrator import request_cancel
     request_cancel(pdf_id)
-    _persist_settled_for_pdf(pdf_id)
+    await _persist_settled([pdf_id])
     await manager.send_log("info", f"Verification cancelled for {pdf_id}", pdf_id=pdf_id)
     return {"success": True}
 
@@ -234,8 +233,7 @@ async def cancel_source_verification(source_id: str):
     request_cancel(source_id)
     # source_id alone doesn't reveal its pdf — flush every PDF that has
     # in-memory state. Cheap; each settled-row dict is small.
-    for pid in list(verify_results.keys()):
-        _persist_settled_for_pdf(pid)
+    await _persist_settled(list(verify_results.keys()))
     return {"success": True}
 
 
@@ -279,10 +277,10 @@ async def get_verify_results(pdf_id: str):
     results = verify_results.get(pdf_id)
     if results is None:
         # Try loading from disk cache
-        cached = load_verify_cache(pdf_id)
+        cached = await load_verify_cache_async(pdf_id)
         if cached:
-            verify_results[pdf_id] = cached
-            results = cached
+            # A run may have started while the file was being read.
+            results = verify_results.setdefault(pdf_id, cached)
         else:
             results = {}
     return {"results": {k: v.model_dump() for k, v in results.items()}}
@@ -315,7 +313,7 @@ async def override_status(pdf_id: str, source_id: str, request: OverrideRequest)
     )
 
     # Persist updated results to disk cache
-    save_verify_cache(pdf_id, verify_results[pdf_id])
+    await save_verify_cache_async(pdf_id, verify_results[pdf_id])
 
     return {"success": True}
 
@@ -343,7 +341,7 @@ async def set_tag_override(pdf_id: str, source_id: str, request: TagOverrideRequ
         existing.tag_overrides[request.tag] = request.state
     existing.decision_tag_override = None
 
-    save_verify_cache(pdf_id, verify_results[pdf_id])
+    await save_verify_cache_async(pdf_id, verify_results[pdf_id])
 
     await manager.broadcast("verify_source_done", {
         "pdf_id": pdf_id,
@@ -378,7 +376,7 @@ async def set_decision_override(pdf_id: str, source_id: str, request: DecisionOv
 
     existing = verify_results[pdf_id][source_id]
     existing.decision_tag_override = request.decision
-    save_verify_cache(pdf_id, verify_results[pdf_id])
+    await save_verify_cache_async(pdf_id, verify_results[pdf_id])
 
     await manager.broadcast("verify_source_done", {
         "pdf_id": pdf_id,
@@ -446,7 +444,7 @@ async def score_scholar(request: ScoreScholarRequest):
     if request.full_source_text:
         full_source_text = request.full_source_text
     else:
-        sources = load_sources_for_pdf(request.pdf_id) or []
+        sources = await load_sources_for_pdf_async(request.pdf_id) or []
         source_rect = next((s for s in sources if s.id == request.source_id), None)
         full_source_text = source_rect.text if source_rect else request.source_text
 
@@ -551,7 +549,7 @@ async def score_scholar(request: ScoreScholarRequest):
     existing.decision_tag = decision_tag
 
     # Persist and broadcast
-    save_verify_cache(request.pdf_id, verify_results[request.pdf_id])
+    await save_verify_cache_async(request.pdf_id, verify_results[request.pdf_id])
 
     await manager.broadcast("verify_source_done", {
         "pdf_id": request.pdf_id,

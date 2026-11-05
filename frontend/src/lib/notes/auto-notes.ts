@@ -19,7 +19,7 @@ import type {
   BoundingBox,
 } from '../api/types'
 import {
-  addNote,
+  addNotes,
   removeAutoNotesForPdfByDecisionTag,
   useNotesStore,
   DEFAULT_CALLOUT_FONT_SIZE,
@@ -107,6 +107,8 @@ export async function generateAutoNotesForPdf({
 
   let highlightsAdded = 0
   let calloutsAdded = 0
+  // Collected and added in one store update at the end.
+  const pending: Parameters<typeof addNotes>[0] = []
   // Toggles every time a callout is placed, to alternate side.
   let calloutSide: 'left' | 'right' = 'left'
 
@@ -120,7 +122,7 @@ export async function generateAutoNotesForPdf({
 
     // Highlights — one per bbox so multi-page refs light up fully.
     for (const bb of bboxes) {
-      addNote({
+      pending.push({
         pdfId,
         pageNum: bb.page,
         kind: 'highlight',
@@ -161,7 +163,7 @@ export async function generateAutoNotesForPdf({
     // alternation pattern still reads as intended.
     calloutSide = calloutSide === 'left' ? 'right' : 'left'
 
-    addNote({
+    pending.push({
       pdfId,
       pageNum: anchor.page,
       kind: 'callout',
@@ -219,7 +221,7 @@ export async function generateAutoNotesForPdf({
         if (filtered.length === list.length) return state
         return { notesByPdf: { ...state.notesByPdf, [pdfId]: filtered } }
       })
-      addNote({
+      pending.push({
         pdfId,
         pageNum: titlePageNum,
         kind: 'callout',
@@ -236,6 +238,7 @@ export async function generateAutoNotesForPdf({
     }
   }
 
+  addNotes(pending)
   return { highlightsAdded, calloutsAdded }
 }
 

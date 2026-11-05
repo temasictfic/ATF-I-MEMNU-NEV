@@ -252,7 +252,14 @@ async function pollTick(current: PollingState): Promise<void> {
 
 // --- Store ---
 
-export const useVerificationStore = create<VerificationState>()((set, get) => ({
+export const useVerificationStore = create<VerificationState>()((rawSet, get) => {
+  // Every action applies the queued WebSocket updates first, so a reset or a
+  // cancel can't be overwritten by an event that arrived just before it.
+  const set: typeof rawSet = ((...args: Parameters<typeof rawSet>) => {
+    flushWsUpdates()
+    ;(rawSet as (...a: Parameters<typeof rawSet>) => void)(...args)
+  }) as typeof rawSet
+  return {
   resultsByPdf: {},
   summaries: {},
   sourceProgress: {},
@@ -1261,13 +1268,145 @@ export const useVerificationStore = create<VerificationState>()((set, get) => ({
       console.error('Failed to load results:', e)
     }
   },
-}))
+  }
+})
 
 // Drop WS events whose `job_id` doesn't match the active run for this
 // source/PDF — closes the cancel-then-reverify race where a late
 // `verify_source_done` from the cancelled run would otherwise clobber the
 // new run's optimistic state. Events without a `job_id` (manual overrides,
 // score_scholar follow-ups, etc.) are always accepted.
+// --- WebSocket update batching ------------------------------------------------
+//
+// A run emits sources × databases events. Applying each with its own
+// setState copied the PDF's whole results map (and the progress map) per
+// event, recounted the PDF per finished source, and re-rendered every
+// subscriber each time. The high-frequency events are now queued and applied
+// together once per frame: each map is copied once per batch, and a PDF's
+// counts are recomputed once per batch. Anything else that writes the store
+// (actions, other events, polling) flushes the queue first, so ordering is
+// unchanged; readers see the updates at most one frame later.
+
+class WsDraft {
+  private results: Record<string, Record<string, VerificationResult>> | null = null
+  private copiedPdfs = new Set<string>()
+  private prior: Record<string, Record<string, VerificationResult>> | null = null
+  private copiedPrior = new Set<string>()
+  private progressMap: Record<string, SourceVerifyProgress> | null = null
+  readonly recount = new Set<string>()
+
+  constructor(readonly state: VerificationState) {}
+
+  readPdf(pdfId: string): Record<string, VerificationResult> | undefined {
+    return (this.results ?? this.state.resultsByPdf)[pdfId]
+  }
+
+  /** Writable copy of one PDF's results (copied once per batch). */
+  pdf(pdfId: string): Record<string, VerificationResult> {
+    if (!this.results) this.results = { ...this.state.resultsByPdf }
+    if (!this.copiedPdfs.has(pdfId)) {
+      this.results[pdfId] = { ...(this.results[pdfId] ?? {}) }
+      this.copiedPdfs.add(pdfId)
+    }
+    return this.results[pdfId]
+  }
+
+  readPrior(pdfId: string): Record<string, VerificationResult> | undefined {
+    return (this.prior ?? this.state.priorResultsByPdf)[pdfId]
+  }
+
+  priorPdf(pdfId: string): Record<string, VerificationResult> {
+    if (!this.prior) this.prior = { ...this.state.priorResultsByPdf }
+    if (!this.copiedPrior.has(pdfId)) {
+      this.prior[pdfId] = { ...(this.prior[pdfId] ?? {}) }
+      this.copiedPrior.add(pdfId)
+    }
+    return this.prior[pdfId]
+  }
+
+  /** Writable copy of the per-source progress map (copied once per batch). */
+  progress(): Record<string, SourceVerifyProgress> {
+    if (!this.progressMap) this.progressMap = { ...this.state.sourceProgress }
+    return this.progressMap
+  }
+
+  patch(): Partial<VerificationState> | null {
+    const out: Partial<VerificationState> = {}
+    if (this.results) out.resultsByPdf = this.results
+    if (this.prior) out.priorResultsByPdf = this.prior
+    if (this.progressMap) out.sourceProgress = this.progressMap
+    if (this.recount.size > 0 && this.results) {
+      const summaries = { ...this.state.summaries }
+      for (const pdfId of this.recount) {
+        const pdfResults = this.results[pdfId] ?? {}
+        let high = 0, medium = 0, low = 0, inProgress = 0
+        for (const r of Object.values(pdfResults)) {
+          if (r.status === 'high') high++
+          else if (r.status === 'medium') medium++
+          else if (r.status === 'low') low++
+          else if (r.status === 'in_progress') inProgress++
+        }
+        const prevSummary = summaries[pdfId]
+        const total = prevSummary?.total && prevSummary.total > 0
+          ? prevSummary.total
+          : Object.keys(pdfResults).length
+        summaries[pdfId] = {
+          pdf_id: pdfId,
+          high,
+          medium,
+          low,
+          in_progress: inProgress,
+          total,
+          completed: inProgress === 0 && (prevSummary?.completed ?? false),
+        }
+      }
+      out.summaries = summaries
+    }
+    return Object.keys(out).length > 0 ? out : null
+  }
+}
+
+type WsUpdate = (draft: WsDraft) => void
+let wsQueue: WsUpdate[] = []
+let wsFlushScheduled = false
+
+function queueWsUpdate(update: WsUpdate): void {
+  wsQueue.push(update)
+  if (wsFlushScheduled) return
+  wsFlushScheduled = true
+  // requestAnimationFrame pauses while the window is hidden or minimized;
+  // the timeout keeps the store current there too. Whichever fires first
+  // flushes, the other finds an empty queue.
+  requestAnimationFrame(flushWsUpdates)
+  setTimeout(flushWsUpdates, 100)
+}
+
+export function flushWsUpdates(): void {
+  wsFlushScheduled = false
+  if (wsQueue.length === 0) return
+  const queue = wsQueue
+  wsQueue = []
+  rawStoreSetState(state => {
+    const draft = new WsDraft(state)
+    for (const update of queue) update(draft)
+    return draft.patch() ?? state
+  })
+}
+
+// Direct setState calls (other stores, components, polling) flush too.
+const rawStoreSetState = useVerificationStore.setState
+useVerificationStore.setState = ((...args: Parameters<typeof rawStoreSetState>) => {
+  flushWsUpdates()
+  ;(rawStoreSetState as (...a: Parameters<typeof rawStoreSetState>) => void)(...args)
+}) as typeof rawStoreSetState
+
+function isStaleIn(state: VerificationState, data: Record<string, unknown>, sourceId: string): boolean {
+  const jobId = typeof data.job_id === 'string' ? data.job_id : ''
+  if (!jobId) return false
+  const active = state.activeJobIdBySource[sourceId]
+  return Boolean(active && active !== jobId)
+}
+
 function isStaleSourceEvent(data: Record<string, unknown>, sourceId: string): boolean {
   const jobId = typeof data.job_id === 'string' ? data.job_id : ''
   if (!jobId) return false
@@ -1299,47 +1438,31 @@ export function initVerificationListeners(): () => void {
       const sourceId = data.source_id as string
       const pdfId = data.pdf_id as string
 
-      if (isStaleSourceEvent(data, sourceId)) return
-
-      // Drop late events for sources the user has already cancelled — the
-      // backend task may still broadcast verify_started before the cancel
-      // reaches it, and we must not reset a cancelled source back to
-      // in_progress.
-      if (useVerificationStore.getState().cancelledSourceIds.has(sourceId)) {
-        return
-      }
-
-
-      useVerificationStore.setState(state => {
-        const prev = state.resultsByPdf[pdfId]?.[sourceId]
-        return {
-          resultsByPdf: {
-            ...state.resultsByPdf,
-            [pdfId]: {
-              ...(state.resultsByPdf[pdfId] ?? {}),
-              [sourceId]: prev
-                ? {
-                    ...prev,
-                    source_id: sourceId,
-                    status: 'in_progress' as VerifyStatus,
-                    all_results: [],
-                    databases_searched: [],
-                  }
-                : {
-                    source_id: sourceId,
-                    status: 'in_progress' as VerifyStatus,
-                    problem_tags: [],
-                    url_liveness: {},
-                    all_results: [],
-                    databases_searched: [],
-                  },
-            },
-          },
-          sourceProgress: {
-            ...state.sourceProgress,
-            [sourceId]: { currentDb: null, checkedDbs: [] },
-          },
-        }
+      queueWsUpdate(d => {
+        // Drop events from a superseded run, and late events for sources the
+        // user has already cancelled: the backend task may still broadcast
+        // verify_started before the cancel reaches it, and we must not reset
+        // a cancelled source back to in_progress.
+        if (isStaleIn(d.state, data, sourceId) || d.state.cancelledSourceIds.has(sourceId)) return
+        const results = d.pdf(pdfId)
+        const prev = results[sourceId]
+        results[sourceId] = prev
+          ? {
+              ...prev,
+              source_id: sourceId,
+              status: 'in_progress' as VerifyStatus,
+              all_results: [],
+              databases_searched: [],
+            }
+          : {
+              source_id: sourceId,
+              status: 'in_progress' as VerifyStatus,
+              problem_tags: [],
+              url_liveness: {},
+              all_results: [],
+              databases_searched: [],
+            }
+        d.progress()[sourceId] = { currentDb: null, checkedDbs: [] }
       })
     }),
 
@@ -1347,22 +1470,15 @@ export function initVerificationListeners(): () => void {
       const sourceId = data.source_id as string
       const db = data.database as string
 
-      if (isStaleSourceEvent(data, sourceId)) return
-
-      // Skip late events for cancelled sources.
-      if (useVerificationStore.getState().cancelledSourceIds.has(sourceId)) {
-        return
-      }
-
-      useVerificationStore.setState(state => ({
-        sourceProgress: {
-          ...state.sourceProgress,
-          [sourceId]: {
-            ...(state.sourceProgress[sourceId] ?? { currentDb: null, checkedDbs: [] }),
-            currentDb: db,
-          },
-        },
-      }))
+      queueWsUpdate(d => {
+        // Skip stale and late events for cancelled sources.
+        if (isStaleIn(d.state, data, sourceId) || d.state.cancelledSourceIds.has(sourceId)) return
+        const progress = d.progress()
+        progress[sourceId] = {
+          ...(progress[sourceId] ?? { currentDb: null, checkedDbs: [] }),
+          currentDb: db,
+        }
+      })
     }),
 
     wsClient.on('verify_db_checked', (data) => {
@@ -1370,48 +1486,30 @@ export function initVerificationListeners(): () => void {
       const sourceId = data.source_id as string
       const dbName = data.database as string
       const dbStatus = (data.db_status as DbCheckStatus) || (data.found ? 'high' : 'low')
-
-      if (isStaleSourceEvent(data, sourceId)) return
-
-      // Skip late events for cancelled sources.
-      if (useVerificationStore.getState().cancelledSourceIds.has(sourceId)) {
-        return
+      const newEntry: DbCheckEntry = {
+        name: dbName,
+        status: dbStatus,
+        searchUrl: (data.search_url as string)
+          ?? ((data.match as Record<string, unknown> | undefined)?.search_url as string | undefined)
+          ?? '',
+        errorMessage: (data.error_message as string | undefined) ?? undefined,
       }
 
-
-      useVerificationStore.setState(state => {
-        const prev = state.resultsByPdf[pdfId]?.[sourceId]
-        const prog = state.sourceProgress[sourceId]
-        const newEntry: DbCheckEntry = {
-          name: dbName,
-          status: dbStatus,
-          searchUrl: (data.search_url as string)
-            ?? ((data.match as Record<string, unknown> | undefined)?.search_url as string | undefined)
-            ?? '',
-          errorMessage: (data.error_message as string | undefined) ?? undefined,
+      queueWsUpdate(d => {
+        // Skip stale and late events for cancelled sources.
+        if (isStaleIn(d.state, data, sourceId) || d.state.cancelledSourceIds.has(sourceId)) return
+        const prev = d.readPdf(pdfId)?.[sourceId]
+        if (prev) {
+          d.pdf(pdfId)[sourceId] = {
+            ...prev,
+            databases_searched: [...prev.databases_searched, dbName],
+            all_results: data.match ? [...prev.all_results, data.match as any] : prev.all_results,
+          }
         }
-
-        return {
-          resultsByPdf: prev
-            ? {
-                ...state.resultsByPdf,
-                [pdfId]: {
-                  ...state.resultsByPdf[pdfId],
-                  [sourceId]: {
-                    ...prev,
-                    databases_searched: [...prev.databases_searched, dbName],
-                    all_results: data.match ? [...prev.all_results, data.match as any] : prev.all_results,
-                  },
-                },
-              }
-            : state.resultsByPdf,
-          sourceProgress: {
-            ...state.sourceProgress,
-            [sourceId]: {
-              currentDb: null,
-              checkedDbs: [...(prog?.checkedDbs ?? []), newEntry],
-            },
-          },
+        const progress = d.progress()
+        progress[sourceId] = {
+          currentDb: null,
+          checkedDbs: [...(progress[sourceId]?.checkedDbs ?? []), newEntry],
         }
       })
     }),
@@ -1420,104 +1518,58 @@ export function initVerificationListeners(): () => void {
       const pdfId = data.pdf_id as string
       const sourceId = data.source_id as string
 
-      // Drop late events from a superseded run (cancel-then-reverify race).
-      // Events without a `job_id` (manual override / score_scholar) skip
-      // this filter and are always applied.
-      if (isStaleSourceEvent(data, sourceId)) return
+      queueWsUpdate(d => {
+        // Drop late events from a superseded run (cancel-then-reverify race).
+        // Events without a `job_id` (manual override / score_scholar) skip
+        // this filter and are always applied.
+        if (isStaleIn(d.state, data, sourceId)) return
+        const progress = d.progress()
 
-      // Cancel handlers already restored the correct UI state (snapshot for
-      // re-runs; entry deleted for first-time verifies). The backend's late
-      // verify_source_done from _finalize_result carries a partial-pass
-      // scoring (typically low/fabricated) that is strictly worse, so ignore
-      // it. Resolve the in-progress dot and bail. Don't remove sourceId from
-      // cancelledSourceIds — startVerification / reverifySource
-      // clear it themselves on the next run, and leaving it set means
-      // subsequent late events for this run also drop.
-      if (useVerificationStore.getState().cancelledSourceIds.has(sourceId)) {
-        useVerificationStore.setState(state => ({
-          sourceProgress: {
-            ...state.sourceProgress,
-            [sourceId]: {
-              currentDb: null,
-              checkedDbs: state.sourceProgress[sourceId]?.checkedDbs ?? [],
-            },
-          },
-        }))
-        return
-      }
+        // Cancel handlers already restored the correct UI state (snapshot for
+        // re-runs; entry deleted for first-time verifies). The backend's late
+        // verify_source_done from _finalize_result carries a partial-pass
+        // scoring (typically low/fabricated) that is strictly worse, so ignore
+        // it. Resolve the in-progress dot and bail. Don't remove sourceId from
+        // cancelledSourceIds — startVerification / reverifySource
+        // clear it themselves on the next run, and leaving it set means
+        // subsequent late events for this run also drop.
+        if (d.state.cancelledSourceIds.has(sourceId)) {
+          progress[sourceId] = {
+            currentDb: null,
+            checkedDbs: progress[sourceId]?.checkedDbs ?? [],
+          }
+          return
+        }
 
-
-      useVerificationStore.setState(state => {
-        const existing = state.resultsByPdf[pdfId] ?? {}
-        const updatedPdfResults = {
-          ...existing,
-          [sourceId]: {
-            source_id: sourceId,
-            status: data.status as VerifyStatus,
-            problem_tags: (data.problem_tags as string[]) ?? [],
-            decision_tag: (data.decision_tag as DecisionTag | undefined),
-            decision_tag_override:
-              (data.decision_tag_override as DecisionTag | null | undefined) ?? null,
-            tag_overrides: (data.tag_overrides as Record<string, boolean> | undefined)
-              ?? existing[sourceId]?.tag_overrides
-              ?? {},
-            url_liveness: (data.url_liveness as Record<string, boolean>) ?? {},
-            best_match: data.best_match as any,
-            all_results: (data.all_results as any[]) ?? [],
-            databases_searched: (data.databases_searched as string[] | undefined)
-              ?? existing[sourceId]?.databases_searched
-              ?? [],
-            scholar_url: (data.scholar_url as string | undefined) || existing[sourceId]?.scholar_url,
-            google_url: (data.google_url as string | undefined) || existing[sourceId]?.google_url,
-          },
+        const existing = d.readPdf(pdfId)?.[sourceId]
+        d.pdf(pdfId)[sourceId] = {
+          source_id: sourceId,
+          status: data.status as VerifyStatus,
+          problem_tags: (data.problem_tags as string[]) ?? [],
+          decision_tag: (data.decision_tag as DecisionTag | undefined),
+          decision_tag_override:
+            (data.decision_tag_override as DecisionTag | null | undefined) ?? null,
+          tag_overrides: (data.tag_overrides as Record<string, boolean> | undefined)
+            ?? existing?.tag_overrides
+            ?? {},
+          url_liveness: (data.url_liveness as Record<string, boolean>) ?? {},
+          best_match: data.best_match as any,
+          all_results: (data.all_results as any[]) ?? [],
+          databases_searched: (data.databases_searched as string[] | undefined)
+            ?? existing?.databases_searched
+            ?? [],
+          scholar_url: (data.scholar_url as string | undefined) || existing?.scholar_url,
+          google_url: (data.google_url as string | undefined) || existing?.google_url,
         }
         // The source completed in the new run — its fresh result is now
         // authoritative, so the pre-rerun snapshot is no longer needed.
-        const pdfPriorSnapshot = state.priorResultsByPdf[pdfId]
-        let nextPriorResults = state.priorResultsByPdf
-        if (pdfPriorSnapshot && sourceId in pdfPriorSnapshot) {
-          const { [sourceId]: _dropped, ...rest } = pdfPriorSnapshot
-          nextPriorResults = { ...state.priorResultsByPdf, [pdfId]: rest }
-        }
+        if (d.readPrior(pdfId)?.[sourceId]) delete d.priorPdf(pdfId)[sourceId]
 
-        let high = 0, medium = 0, low = 0, inProgress = 0
-        for (const r of Object.values(updatedPdfResults)) {
-          if (r.status === 'high') high++
-          else if (r.status === 'medium') medium++
-          else if (r.status === 'low') low++
-          else if (r.status === 'in_progress') inProgress++
+        progress[sourceId] = {
+          currentDb: null,
+          checkedDbs: progress[sourceId]?.checkedDbs ?? [],
         }
-        const prevSummary = state.summaries[pdfId]
-        const total = prevSummary?.total && prevSummary.total > 0
-          ? prevSummary.total
-          : Object.keys(updatedPdfResults).length
-
-        return {
-          resultsByPdf: {
-            ...state.resultsByPdf,
-            [pdfId]: updatedPdfResults,
-          },
-          sourceProgress: {
-            ...state.sourceProgress,
-            [sourceId]: {
-              currentDb: null,
-              checkedDbs: state.sourceProgress[sourceId]?.checkedDbs ?? [],
-            },
-          },
-          summaries: {
-            ...state.summaries,
-            [pdfId]: {
-              pdf_id: pdfId,
-              high,
-              medium,
-              low,
-              in_progress: inProgress,
-              total,
-              completed: inProgress === 0 && (prevSummary?.completed ?? false),
-            },
-          },
-          priorResultsByPdf: nextPriorResults,
-        }
+        d.recount.add(pdfId)
       })
     }),
 
@@ -1526,6 +1578,7 @@ export function initVerificationListeners(): () => void {
     // a first run) instead of recording a bogus Low/"fabricated" verdict;
     // mirror that here and surface the error.
     wsClient.on('verify_source_failed', (data) => {
+      flushWsUpdates()
       const pdfId = data.pdf_id as string
       const sourceId = data.source_id as string
       if (isStaleSourceEvent(data, sourceId)) return
@@ -1581,6 +1634,7 @@ export function initVerificationListeners(): () => void {
     }),
 
     wsClient.on('verify_pdf_done', (data) => {
+      flushWsUpdates()
       const pdfId = data.pdf_id as string
 
       if (isStalePdfEvent(data, pdfId)) return
@@ -1658,6 +1712,7 @@ export function initVerificationListeners(): () => void {
     }),
 
     wsClient.on('verify_pdf_updated', (data) => {
+      flushWsUpdates()
       const pdfId = data.pdf_id as string
       if (isStalePdfEvent(data, pdfId)) return
       useVerificationStore.setState(state => {

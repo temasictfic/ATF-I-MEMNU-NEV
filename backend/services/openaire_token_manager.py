@@ -26,7 +26,7 @@ from typing import Literal
 
 import aiohttp
 
-from services.settings_store import get_current_settings, save_settings
+from services.settings_store import get_current_settings, save_settings_async
 from verifiers._http import create_ssl_context
 
 REFRESH_ENDPOINT = (
@@ -218,7 +218,7 @@ async def _refresh_and_cache(refresh_token: str) -> str | None:
                 .date()
                 .isoformat(),
             })
-            save_settings(updated)
+            await save_settings_async(updated)
             # Re-bind the fingerprint so a racing verifier that reads the
             # freshly persisted refresh token right after this write doesn't
             # treat our just-cached access token as stale and re-exchange.
