@@ -114,7 +114,7 @@ function SecretInput({
   )
 }
 
-const GITHUB_REPO_URL = 'https://github.com/temasictfic/Atf-I-Memnu'
+const GITHUB_REPO_URL = 'https://github.com/temasictfic/ATF-I-MEMNU-NEV'
 
 const OPENAIRE_TOKEN_PAGE_URL = 'https://develop.openaire.eu/personal-token'
 // OpenAIRE refresh tokens live for 1 month. Surface the warning state a week
