@@ -110,7 +110,8 @@ On Windows, `KaynakcaKontrolSistemi.exe --smoke-test shot.png` launches the real
 
 `build.ps1` produces the PyInstaller one-folder app, the Inno Setup installer, a portable zip and `SHA256SUMS` in `packaging/dist/`.
 
-- **Releasing:** pushing a `v*` tag that matches `atfi_app/version.py` runs `.github/workflows/release.yml`. The in-app updater reads the latest GitHub release and verifies the installer against `SHA256SUMS`.
+- **Releasing:** run **Build and Release** from the Actions tab on `main`. It tags `v<atfi_app/version.py>` and publishes the installer, the portable zip and `SHA256SUMS`. Pushing a matching `v*` tag does the same. The in-app updater reads the latest GitHub release and verifies the installer against `SHA256SUMS`.
+- **The repository must be public** for end users to receive updates and the NER model. Installers and the app download anonymously, so assets in a private repository return 404. Until then, the model falls back to the mirror in `model_manifest.json` and update checks fail silently.
 - **Model release:** run the **Publish NER model** workflow once, and again only when the model changes. It uploads the model files to the `model-citation-ner-int8-v1` release, the primary source in `atfi_app/model_manifest.json`; until then the original repository is used as a mirror. To ship a new model, update the manifest (version, hashes, URLs) and run the workflow again.
 
 ## Repository layout

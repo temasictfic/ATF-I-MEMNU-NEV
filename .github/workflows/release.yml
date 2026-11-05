@@ -3,6 +3,9 @@ name: Build and Release
 on:
   push:
     tags: ['v*']
+  # Manual release from the Actions tab: builds the selected branch and
+  # creates the tag v<atfi_app/version.py> together with the release.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -24,11 +27,14 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Check tag matches atfi_app/version.py
+      - name: Resolve release tag (must match atfi_app/version.py)
         shell: pwsh
         run: |
           $version = (uv run python scripts/release_tools.py version).Trim()
-          if ("v$version" -ne "$env:GITHUB_REF_NAME") { throw "Tag $env:GITHUB_REF_NAME does not match version $version" }
+          if ("$env:GITHUB_REF_TYPE" -eq "tag") {
+            if ("v$version" -ne "$env:GITHUB_REF_NAME") { throw "Tag $env:GITHUB_REF_NAME does not match version $version" }
+          }
+          "RELEASE_TAG=v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Ensure Inno Setup
         shell: pwsh
@@ -52,8 +58,9 @@ jobs:
       - name: Create release and upload artifacts
         shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "${GITHUB_REF_NAME#v}" \
+          gh release create "$RELEASE_TAG" \
+            --target "$GITHUB_SHA" \
+            --title "${RELEASE_TAG#v}" \
             --generate-notes \
             packaging/dist/*.exe packaging/dist/*.zip packaging/dist/SHA256SUMS
         env:
