@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -9,6 +9,7 @@ import {
 } from '../../stores/settings-store'
 import styles from './SettingsPage.module.css'
 import { hostAPI } from '../../host/bridge'
+import { api } from '../../api/rest-client'
 
 interface NumberSettingInputProps {
   value: number
@@ -133,7 +134,7 @@ function daysUntilOpenaireExpiry(savedAt: string | undefined): number | null {
 }
 
 export default function SettingsPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const settings = useSettingsStore(s => s.settings)
   const saveStatus = useSettingsStore(s => s.saveStatus)
   const exclusionEntries = useSettingsStore(s => s.exclusionEntries)
@@ -164,7 +165,44 @@ export default function SettingsPage() {
   const [modalListUrl, setModalListUrl] = useState('')
   const [modalEditUrl, setModalEditUrl] = useState('')
 
-  const openaireConnected = !!settings.api_keys?.openaire
+  // Escape closes the URL modal wherever focus is (the overlay itself is not
+  // focusable, so an onKeyDown on it only fired from inside the inputs).
+  useEffect(() => {
+    if (!exclusionModalOpen) return
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') setExclusionModalOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [exclusionModalOpen])
+
+  const openaireToken = settings.api_keys?.openaire
+  const openaireConnected = !!openaireToken
+  // Last refresh-token exchange made during verification. A failure there is
+  // silent (the verifier falls back to anonymous at 60 req/h), so show it.
+  const [openaireExchangeError, setOpenaireExchangeError] = useState<{
+    error: string
+    at: number | null
+  } | null>(null)
+  useEffect(() => {
+    if (!openaireToken) {
+      setOpenaireExchangeError(null)
+      return
+    }
+    let cancelled = false
+    api
+      .getOpenaireStatus()
+      .then(res => {
+        if (cancelled) return
+        setOpenaireExchangeError(
+          res.status === 'failed' ? { error: res.last_error ?? '', at: res.last_attempt_at_ms } : null,
+        )
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [openaireToken])
   const openaireDaysLeft = daysUntilOpenaireExpiry(settings.openaire_token_saved_at)
   const openaireExpiringSoon =
     openaireDaysLeft !== null && openaireDaysLeft <= OPENAIRE_WARN_DAYS_BEFORE_EXPIRY
@@ -557,42 +595,55 @@ export default function SettingsPage() {
 
           <div className={styles['openaire-card']}>
             {openaireConnected ? (
-              <div
-                className={`${styles['openaire-status-row']} ${openaireExpiringSoon ? styles['openaire-status-row--warn'] : ''}`}
-              >
-                <svg
-                  className={styles['openaire-status-check']}
-                  viewBox="0 0 20 20"
-                  fill="currentColor"
-                  aria-hidden="true"
+              <>
+                <div
+                  className={`${styles['openaire-status-row']} ${openaireExpiringSoon ? styles['openaire-status-row--warn'] : ''}`}
                 >
-                  <path
-                    fillRule="evenodd"
-                    d="M16.707 5.293a1 1 0 010 1.414L8.414 15 3.293 9.879a1 1 0 011.414-1.414L8.414 12.17l6.879-6.878a1 1 0 011.414 0z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-                <span className={styles['openaire-status-text']}>
-                  <strong>{t('settings.openaire.connected')}</strong>
-                  {openaireDaysLeft !== null && (
-                    <span className={styles['openaire-status-hint']}>
-                      {openaireExpiringSoon
-                        ? t('settings.openaire.expiresSoon', { days: Math.max(openaireDaysLeft, 0) })
-                        : t('settings.openaire.autoRenews', { days: openaireDaysLeft })}
-                    </span>
-                  )}
-                </span>
-                <button
-                  type="button"
-                  className={styles['openaire-disconnect']}
-                  onClick={() => {
-                    setOpenaireError(null)
-                    disconnectOpenaire()
-                  }}
-                >
-                  {t('settings.openaire.disconnect')}
-                </button>
-              </div>
+                  <svg
+                    className={styles['openaire-status-check']}
+                    viewBox="0 0 20 20"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M16.707 5.293a1 1 0 010 1.414L8.414 15 3.293 9.879a1 1 0 011.414-1.414L8.414 12.17l6.879-6.878a1 1 0 011.414 0z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  <span className={styles['openaire-status-text']}>
+                    <strong>{t('settings.openaire.connected')}</strong>
+                    {openaireDaysLeft !== null && (
+                      <span className={styles['openaire-status-hint']}>
+                        {openaireExpiringSoon
+                          ? t('settings.openaire.expiresSoon', { days: Math.max(openaireDaysLeft, 0) })
+                          : t('settings.openaire.autoRenews', { days: openaireDaysLeft })}
+                      </span>
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    className={styles['openaire-disconnect']}
+                    onClick={() => {
+                      setOpenaireError(null)
+                      disconnectOpenaire()
+                    }}
+                  >
+                    {t('settings.openaire.disconnect')}
+                  </button>
+                </div>
+                {openaireExchangeError && (
+                  <p className={styles['openaire-error']} role="alert">
+                    {t('settings.openaire.exchangeFailed', {
+                      error: openaireExchangeError.error,
+                      time:
+                        openaireExchangeError.at !== null
+                          ? new Date(openaireExchangeError.at).toLocaleString(i18n.language)
+                          : '',
+                    })}
+                  </p>
+                )}
+              </>
             ) : (
               <>
                 <p className={styles['openaire-step-hint']}>{t('settings.openaire.stepHint')}</p>
@@ -867,15 +918,19 @@ export default function SettingsPage() {
             <div
               className={styles['modal-overlay']}
               onClick={() => setExclusionModalOpen(false)}
-              onKeyDown={e => {
-                if (e.key === 'Escape') setExclusionModalOpen(false)
-              }}
             >
               <div
                 className={styles['modal-card']}
+                role="dialog"
+                aria-modal="true"
                 onClick={e => e.stopPropagation()}
                 onKeyDown={e => {
-                  if (e.key === 'Enter') handleApplyExclusionUrls()
+                  // Enter applies only from the text fields; on a button it
+                  // activates that button (Cancel, Default, ×) as usual.
+                  if (e.key === 'Enter' && e.target instanceof HTMLInputElement) {
+                    e.preventDefault()
+                    handleApplyExclusionUrls()
+                  }
                 }}
               >
                 <div className={styles['modal-header']}>

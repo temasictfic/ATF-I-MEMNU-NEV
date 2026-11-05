@@ -74,9 +74,14 @@ def invalidate_cache() -> None:
     reusing a token bound to a token the user just invalidated.
     """
     global _cached_access_token, _cached_expires_at, _cached_refresh_fingerprint
+    global _runtime_status, _runtime_last_attempt_ms, _runtime_last_error
     _cached_access_token = None
     _cached_expires_at = 0.0
     _cached_refresh_fingerprint = None
+    # A failure recorded for the previous token says nothing about the new one.
+    _runtime_status = "never"
+    _runtime_last_attempt_ms = None
+    _runtime_last_error = None
 
 
 def _refresh_window_cap(*, authenticated: bool) -> None:

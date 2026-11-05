@@ -98,7 +98,8 @@
       "connected": "Connected",
       "autoRenews": "Auto-renews. Refresh token expires in {{days}} days.",
       "expiresSoon": "Refresh token expires in {{days}} days — reconnect soon.",
-      "disconnect": "Disconnect"
+      "disconnect": "Disconnect",
+      "exchangeFailed": "Last token renewal failed ({{time}}): {{error}}. OpenAIRE is being searched anonymously (60 requests/hour). Reconnect if this persists."
     },
     "search": {
       "title": "Search Configuration",
@@ -106,7 +107,7 @@
       "timeoutDesc": "Max time per database per source",
       "maxApisLabel": "Max Concurrent API Calls",
       "maxApisDesc": "Parallel API requests limit",
-      "concurrentSourcesLabel": "Concurrent Sources Countper PDF",
+      "concurrentSourcesLabel": "Concurrent Sources per PDF",
       "concurrentSourcesDesc": "How many sources verify in parallel for one PDF",
       "autoScholarLabel": "Auto Google Scholar After Verify",
       "autoScholarDesc": "Automatically run Google Scholar scan for non-high sources after verification finishes",

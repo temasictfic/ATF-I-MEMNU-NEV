@@ -169,8 +169,11 @@ These change behaviour or need a bigger refactor, so they were left alone.
 12. **URL checker:** the SSRF guard resolves DNS itself, and aiohttp resolves again when it connects (DNS-rebinding race).
    - ✅ **Fixed:** a connect-time resolver drops non-public addresses, so the address used is the one validated. Configured proxy hosts are exempt.
 13. **Notes stay after a PDF is removed** and reappear on re-import (`clearNotesForPdf` exists but isn't called). This may be intentional.
+   - ✔️ **Decided:** keep. Re-importing a PDF brings its notes back.
 14. **`GET /settings/openaire/status`** exists so the UI can show silent OpenAIRE auth failures, but nothing displays it.
+   - ✅ **Fixed:** while connected, Settings shows the last failed token renewal (time and error) and says OpenAIRE is being searched anonymously. Connecting or disconnecting clears the recorded failure.
 15. **Settings modal:** pressing Enter on *any* button applies the values.
+   - ✅ **Fixed:** Enter applies only from the URL fields; on a button it activates that button. Escape now closes the dialog wherever focus is (before, it only worked from inside the fields). Also fixed the English label typo "Concurrent Sources Countper PDF".
 
 ### Performance
 
@@ -188,6 +191,7 @@ These change behaviour or need a bigger refactor, so they were left alone.
 ### Security hardening
 
 - API keys are stored in plain text in `settings.json`. Encrypting them with Windows DPAPI would be cheap.
+  - ✔️ **Decided:** left as plain text.
 
 ### Dependencies
 

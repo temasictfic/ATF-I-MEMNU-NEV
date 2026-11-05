@@ -98,7 +98,8 @@
       "connected": "Bağlı",
       "autoRenews": "Otomatik yenileniyor. Yenileme jetonu {{days}} gün içinde sona erecek.",
       "expiresSoon": "Yenileme jetonu {{days}} gün içinde sona erecek — yakında yeniden bağlanın.",
-      "disconnect": "Bağlantıyı kes"
+      "disconnect": "Bağlantıyı kes",
+      "exchangeFailed": "Son token yenilemesi başarısız oldu ({{time}}): {{error}}. OpenAIRE anonim olarak sorgulanıyor (saatte 60 istek). Sorun sürerse yeniden bağlanın."
     },
     "search": {
       "title": "Arama Yapılandırması",

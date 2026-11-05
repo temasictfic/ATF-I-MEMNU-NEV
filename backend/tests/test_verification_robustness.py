@@ -290,3 +290,21 @@ def test_resolver_drops_private_addresses(monkeypatch) -> None:
         return [i["host"] for i in mixed], [i["host"] for i in proxy]
 
     assert asyncio.run(scenario()) == (["93.184.216.34"], ["10.1.2.3"])
+
+
+# --- item 14: a recorded OpenAIRE failure is cleared when the token changes ------
+
+
+def test_openaire_failure_status_resets_on_new_token(monkeypatch) -> None:
+    from services import openaire_token_manager as otm
+
+    async def fail(token, **kwargs):
+        raise RuntimeError("invalid_grant")
+
+    monkeypatch.setattr(otm, "exchange_refresh_token", fail)
+    monkeypatch.setattr(otm, "_refresh_window_cap", lambda **k: None)
+    assert asyncio.run(otm._refresh_and_cache("old-token")) is None
+    status = otm.get_runtime_status()
+    assert status["status"] == "failed" and status["last_error"] == "invalid_grant"
+    otm.invalidate_cache()  # what connect / disconnect do
+    assert otm.get_runtime_status() == {"status": "never", "last_attempt_at_ms": None, "last_error": None}

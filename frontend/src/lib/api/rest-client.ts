@@ -150,4 +150,13 @@ export const api = {
 
   disconnectOpenaire: () =>
     request<import('./types').AppSettings>('POST', '/api/settings/openaire/disconnect'),
+
+  // Outcome of the last refresh-token exchange made during verification.
+  // A failure is otherwise silent (the verifier falls back to anonymous).
+  getOpenaireStatus: () =>
+    request<{
+      status: 'never' | 'ok' | 'failed'
+      last_attempt_at_ms: number | null
+      last_error: string | null
+    }>('GET', '/api/settings/openaire/status'),
 }
