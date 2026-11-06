@@ -76,6 +76,7 @@ interface VerificationState {
   overrideStatus: (pdfId: string, sourceId: string, status: 'high' | 'medium' | 'low') => Promise<void>
   toggleTag: (pdfId: string, sourceId: string, tag: 'authors' | 'year' | 'title' | 'journal' | 'doi/arXiv') => Promise<void>
   cycleDecisionTag: (pdfId: string, sourceId: string) => Promise<void>
+  setDecisionTag: (pdfId: string, sourceId: string, tag: DecisionTag) => Promise<void>
   cancelAll: () => Promise<void>
   cancelPdf: (pdfId: string) => Promise<void>
   cancelSource: (sourceId: string) => Promise<void>
@@ -1011,13 +1012,19 @@ export const useVerificationStore = create<VerificationState>()((rawSet, get) =>
 
   cycleDecisionTag: async (pdfId, sourceId) => {
     const CYCLE: Record<DecisionTag, DecisionTag> = {
-      valid: 'citation',
-      citation: 'fabricated',
-      fabricated: 'valid',
+      citation: 'valid',
+      valid: 'fabricated',
+      fabricated: 'citation',
     }
     const current = useVerificationStore.getState().resultsByPdf[pdfId]?.[sourceId]
     if (!current) return
-    const next = CYCLE[effectiveDecisionTag(current)]
+    await get().setDecisionTag(pdfId, sourceId, CYCLE[effectiveDecisionTag(current)])
+  },
+
+  setDecisionTag: async (pdfId, sourceId, next) => {
+    const current = useVerificationStore.getState().resultsByPdf[pdfId]?.[sourceId]
+    if (!current) return
+    if (effectiveDecisionTag(current) === next) return
     const prevOverride = current.decision_tag_override ?? null
 
     set(state => {
@@ -1037,7 +1044,7 @@ export const useVerificationStore = create<VerificationState>()((rawSet, get) =>
     try {
       await api.setDecisionOverride(pdfId, sourceId, next)
     } catch (e) {
-      console.error('Failed to cycle decision tag:', e)
+      console.error('Failed to set decision tag:', e)
       set(state => {
         const prev = state.resultsByPdf[pdfId]?.[sourceId]
         if (!prev) return state

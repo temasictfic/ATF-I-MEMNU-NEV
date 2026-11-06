@@ -173,7 +173,7 @@
     "sort": {
       "byStatus": "Duruma göre sırala",
       "byName": "Ada göre sırala",
-      "byNumbered": "Numaralıya göre sırala (numarasız önce)",
+      "byNumbered": "Numaralıya göre sırala",
       "byCount": "Kaynak sayısına göre sırala",
       "name": "Ad"
     },
@@ -406,6 +406,8 @@
       "title": "Başlık benzerliği %85'in altında"
     },
     "exportPdf": "Doğrulama Sonuçlarını PDF'e Aktar",
+    "hideValid": "Geçerli harici göster",
+    "showAllCards": "Tüm kartları göster",
     "exportPdfRunning": "Doğrulama sürerken dışa aktarma devre dışı",
     "exportPdfNoResults": "Dışa aktarılacak doğrulama sonucu yok.",
     "exportPdfBatch": "Sınır çizgisi üstündeki PDF'ler için raporları dışa aktar",

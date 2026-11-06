@@ -1641,13 +1641,11 @@ export default function ParsingPage() {
                       &times;
                     </span>
                   </span>
-                  <span className={styles["pdf-name"]} title={pdf.name}>
+                  <span
+                    className={`${styles["pdf-name"]} ${pdf.numbered ? styles["pdf-name-numbered"] : ""}`}
+                    title={pdf.name}
+                  >
                     {pdf.name}
-                  </span>
-                  <span className={styles["pdf-numbered-col"]}>
-                    {pdf.numbered && (
-                      <span className={styles["numbered-tag"]}>N</span>
-                    )}
                   </span>
                   <span className={styles["pdf-count"]}>{pdf.source_count}</span>
                 </button>

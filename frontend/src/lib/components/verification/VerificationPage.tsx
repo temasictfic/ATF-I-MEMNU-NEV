@@ -559,6 +559,60 @@ export default function VerificationPage() {
 
   const [cardSearchQuery, setCardSearchQuery] = useState('')
 
+  // Search bar stays centred under the header tabs with equal gaps to both
+  // button groups. Equal gaps around a centred bar need the groups' inner
+  // edges mirrored around the tab centre, so the narrower group is given a
+  // min-width (its buttons flex-grow to fill it). Callback ref because the
+  // toolbar mounts/unmounts with the selected PDF.
+  const cardToolbarCleanupRef = useRef<(() => void) | null>(null)
+  const cardToolbarRef = useCallback((el: HTMLDivElement | null) => {
+    cardToolbarCleanupRef.current?.()
+    cardToolbarCleanupRef.current = null
+    if (!el) return
+    const leftEl = el.firstElementChild as HTMLElement | null
+    const rightEl = el.lastElementChild as HTMLElement | null
+    if (!leftEl || !rightEl) return
+    const SEARCH_GAP = 12
+    const update = () => {
+      const rootStyle = getComputedStyle(document.documentElement)
+      const tabL = parseFloat(rootStyle.getPropertyValue('--tab-left-vp'))
+      const tabR = parseFloat(rootStyle.getPropertyValue('--tab-right-vp'))
+      if (!Number.isFinite(tabL) || !Number.isFinite(tabR)) return
+      // Measure the groups at their natural width.
+      leftEl.style.minWidth = ''
+      rightEl.style.minWidth = ''
+      const tb = el.getBoundingClientRect()
+      if (tb.width === 0) return // page hidden (other tab)
+      const lr = leftEl.getBoundingClientRect()
+      const rr = rightEl.getBoundingClientRect()
+      const center = (tabL + tabR) / 2 - tb.left
+      const leftOuter = lr.left - tb.left
+      const rightOuter = rr.right - tb.left
+      // Distance from the centre to each group's inner edge; the tighter
+      // side wins and the other group is stretched to the same distance.
+      const s = Math.max(0, Math.min(center - (lr.right - tb.left), (rr.left - tb.left) - center))
+      leftEl.style.minWidth = `${Math.max(0, center - s - leftOuter)}px`
+      rightEl.style.minWidth = `${Math.max(0, rightOuter - (center + s))}px`
+      // Capped at the header tab-nav width; gaps stay equal because the
+      // groups' inner edges are mirrored around the same centre.
+      const half = Math.max(0, Math.min(s - SEARCH_GAP, (tabR - tabL) / 2))
+      el.style.setProperty('--search-left', `${center - half}px`)
+      el.style.setProperty('--search-width', `${half * 2}px`)
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    ro.observe(leftEl)
+    ro.observe(rightEl)
+    window.addEventListener('resize', update)
+    cardToolbarCleanupRef.current = () => {
+      ro.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [])
+  // Toolbar funnel toggle: show only Fabricated/Citation cards.
+  const [hideValid, setHideValid] = useState(false)
+
   // Best-match card "More" toggle. Reset to collapsed whenever the user
   // selects a different source so each card opens with the same compact
   // layout the rest of the app uses today.
@@ -572,9 +626,16 @@ export default function VerificationPage() {
   useEffect(() => { setSelectedMatchDb(null); setMatchExpanded(false) }, [selectedSourceId])
 
   const filteredSourceCards = useMemo(() => {
+    // Muaf and never-verified cards carry no meaningful decision, so the
+    // "hide valid" view drops them along with Valid ones.
+    const base = hideValid
+      ? sortedSourceCards.filter(c =>
+          !c.exclusion.excluded && c.result !== undefined &&
+          effectiveDecisionTag(c.result) !== 'valid')
+      : sortedSourceCards
     const q = cardSearchQuery.trim().toLowerCase()
-    if (!q) return sortedSourceCards
-    const matched = sortedSourceCards.filter(card => {
+    if (!q) return base
+    const matched = base.filter(card => {
       const text = (verifyTexts[card.source.id] ?? card.source.text ?? '').toLowerCase()
       const ref = String(card.source.ref_number ?? '')
       return text.includes(q) || ref.includes(q)
@@ -587,7 +648,7 @@ export default function VerificationPage() {
       return 3
     }
     return [...matched].sort((a, b) => rank(a) - rank(b))
-  }, [sortedSourceCards, cardSearchQuery, verifyTexts])
+  }, [sortedSourceCards, cardSearchQuery, verifyTexts, hideValid])
 
   // Drag and drop state
   const [dragSourceId, setDragSourceId] = useState<string | null>(null)
@@ -2379,7 +2440,7 @@ export default function VerificationPage() {
         ) : (
           <>
             {/* Toolbar */}
-            <div className={styles['card-toolbar']}>
+            <div className={styles['card-toolbar']} ref={cardToolbarRef}>
               <div className={styles['toolbar-left']}>
                 <button
                   className={`${styles['toolbar-btn']} ${styles['toolbar-btn-enable-all']}`}
@@ -2423,16 +2484,45 @@ export default function VerificationPage() {
                 ><span aria-hidden="true">{effectivePdfId && isPdfVerifying(effectivePdfId) ? '■' : '▶'}</span>{t('verification.nfShort')}</button>
               </div>
               <div className={styles['toolbar-center']}>
-                <input
-                  type="text"
-                  className={styles['toolbar-search']}
-                  value={cardSearchQuery}
-                  onChange={(e) => setCardSearchQuery(e.target.value)}
-                  placeholder={effectivePdfId ? t('verification.searchPlaceholderPdf', { name: (pdfs.find(p => p.id === effectivePdfId)?.name ?? '').replace(/\.[^.]+$/, '') }) : t('verification.searchPlaceholder')}
-                  aria-label={effectivePdfId ? t('verification.searchPlaceholderPdf', { name: (pdfs.find(p => p.id === effectivePdfId)?.name ?? '').replace(/\.[^.]+$/, '') }) : t('verification.searchPlaceholder')}
-                />
+                <div className={styles['toolbar-search-wrap']}>
+                  <input
+                    type="text"
+                    className={styles['toolbar-search']}
+                    value={cardSearchQuery}
+                    onChange={(e) => setCardSearchQuery(e.target.value)}
+                    placeholder={effectivePdfId ? t('verification.searchPlaceholderPdf', { name: (pdfs.find(p => p.id === effectivePdfId)?.name ?? '').replace(/\.[^.]+$/, '') }) : t('verification.searchPlaceholder')}
+                    aria-label={effectivePdfId ? t('verification.searchPlaceholderPdf', { name: (pdfs.find(p => p.id === effectivePdfId)?.name ?? '').replace(/\.[^.]+$/, '') }) : t('verification.searchPlaceholder')}
+                  />
+                  <button
+                    type="button"
+                    className={styles['search-export-btn']}
+                    onClick={handleExportVerificationReport}
+                    disabled={!effectivePdfId || !currentSummary || exportingReport || isVerificationRunning}
+                    title={isVerificationRunning ? t('verification.exportPdfRunning') : t('verification.exportPdf')}
+                    aria-label={isVerificationRunning ? t('verification.exportPdfRunning') : t('verification.exportPdf')}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                      <polyline points="7 10 12 15 17 10"/>
+                      <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                  </button>
+                </div>
               </div>
               <div className={styles['toolbar-right']}>
+                <button
+                  type="button"
+                  className={`${styles['toolbar-btn']} ${styles['toolbar-btn-export']} ${hideValid ? styles['toolbar-btn-filter-active'] : ''}`}
+                  onClick={() => setHideValid(v => !v)}
+                  disabled={!effectivePdfId}
+                  aria-pressed={hideValid}
+                  title={hideValid ? t('verification.showAllCards') : t('verification.hideValid')}
+                  aria-label={hideValid ? t('verification.showAllCards') : t('verification.hideValid')}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+                  </svg>
+                </button>
                 <div
                   className={styles['sort-dropdown']}
                   ref={sortDropdownRef}
@@ -2451,7 +2541,7 @@ export default function VerificationPage() {
                   </button>
                   {sortOpen && (
                     <ul className={styles['sort-menu']} role="menu">
-                      {(['ref', 'enabled', 'status', 'decision'] as const).map(key => (
+                      {(['ref', 'decision', 'status', 'enabled'] as const).map(key => (
                         <li key={key} role="none">
                           <button
                             type="button"
@@ -2469,18 +2559,6 @@ export default function VerificationPage() {
                     </ul>
                   )}
                 </div>
-                <button
-                  className={`${styles['toolbar-btn']} ${styles['toolbar-btn-export']}`}
-                  onClick={handleExportVerificationReport}
-                  disabled={!effectivePdfId || !currentSummary || exportingReport || isVerificationRunning}
-                  title={isVerificationRunning ? t('verification.exportPdfRunning') : t('verification.exportPdf')}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                    <polyline points="7 10 12 15 17 10"/>
-                    <line x1="12" y1="15" x2="12" y2="3"/>
-                  </svg>
-                </button>
               </div>
             </div>
 
@@ -2796,7 +2874,7 @@ export default function VerificationPage() {
               }}
               title={t('verification.scrollToCard')}
             >[{currentSource?.ref_number ?? '?'}]</button>
-            <div className={styles['detail-actions']}>
+            <div className={styles['detail-top-center']}>
               <button
                 className={`${styles['action-btn']} ${styles['action-btn-accent']}`}
                 onClick={handleReverifyOrCancelSource}
@@ -2806,6 +2884,31 @@ export default function VerificationPage() {
                   ? <><span>&#x25A0;</span> {t('verification.stop')}</>
                   : <><span>&#x21BB;</span> {t('verification.verify')}</>}
               </button>
+            </div>
+            <div className={styles['detail-top-match']}>
+              {(() => {
+                // Single 3-state match button: shows the current status and
+                // cycles High → Medium → Low → High on click.
+                const status = currentResult?.status
+                const isMarked = status === 'high' || status === 'medium' || status === 'low'
+                const shown = isMarked ? status : 'high'
+                const next = status === 'high' ? 'medium' : status === 'medium' ? 'low' : 'high'
+                const symbol = shown === 'high' ? '✓' : shown === 'medium' ? '~' : 'X'
+                const nextTitle = next === 'high'
+                  ? t('verification.markAsHigh')
+                  : next === 'medium'
+                    ? t('verification.markAsMedium')
+                    : t('verification.markAsLow')
+                return (
+                  <button
+                    className={`${styles['override-btn']} ${styles[`override-${shown}`]} ${isMarked ? styles[`override-${shown}-active`] : ''}`}
+                    disabled={!currentResult || status === 'in_progress'}
+                    onClick={() => handleOverride(next)}
+                    title={nextTitle}
+                    aria-label={nextTitle}
+                  >{symbol}</button>
+                )
+              })()}
             </div>
           </div>
         )}
@@ -2818,50 +2921,26 @@ export default function VerificationPage() {
                 <div className={styles['detail-action-row']}>
                   {currentResult && (() => {
                     const decision = effectiveDecisionTag(currentResult)
-                    const cls = decision === 'valid'
-                      ? styles['valid-tag']
-                      : decision === 'citation'
-                        ? styles['citation-tag']
-                        : styles['fabricated-tag']
-                    const label = decision === 'valid'
-                      ? t('verification.validTag')
-                      : decision === 'citation'
-                        ? t('verification.citationTag')
-                        : t('verification.fabricatedTag')
-                    const tip = decision === 'valid'
-                      ? t('verification.validTagTooltip')
-                      : decision === 'citation'
-                        ? t('verification.citationTagTooltip')
-                        : t('verification.fabricatedTagTooltip')
-                    return (
+                    const DECISIONS = [
+                      { key: 'valid', cls: styles['valid-tag'], label: t('verification.validTag'), tip: t('verification.validTagTooltip') },
+                      { key: 'citation', cls: styles['citation-tag'], label: t('verification.citationTag'), tip: t('verification.citationTagTooltip') },
+                      { key: 'fabricated', cls: styles['fabricated-tag'], label: t('verification.fabricatedTag'), tip: t('verification.fabricatedTagTooltip') },
+                    ] as const
+                    return DECISIONS.map(d => (
                       <button
+                        key={d.key}
                         type="button"
-                        className={`${cls} ${styles['detail-decision-pill']}`}
-                        title={tip}
+                        className={`${d.cls} ${styles['detail-decision-pill']} ${decision !== d.key ? styles['detail-decision-inactive'] : ''}`}
+                        title={d.tip}
+                        aria-pressed={decision === d.key}
                         onClick={() => {
-                          if (!effectivePdfId || !selectedSourceId) return
+                          if (!effectivePdfId || !selectedSourceId || decision === d.key) return
                           pendingScrollCardIdRef.current = selectedSourceId
-                          useVerificationStore.getState().cycleDecisionTag(effectivePdfId, selectedSourceId)
+                          useVerificationStore.getState().setDecisionTag(effectivePdfId, selectedSourceId, d.key)
                         }}
-                      >{label}</button>
-                    )
+                      >{d.label}</button>
+                    ))
                   })()}
-                  <div className={styles['detail-action-spacer']} />
-                  <button
-                    className={`${styles['override-btn']} ${styles['override-high']} ${currentResult?.status === 'high' ? styles['override-high-active'] : ''}`}
-                    disabled={!currentResult || currentResult.status === 'in_progress'}
-                    onClick={() => handleOverride('high')} title={t('verification.markAsHigh')}
-                  >&#x2713;</button>
-                  <button
-                    className={`${styles['override-btn']} ${styles['override-medium']} ${currentResult?.status === 'medium' ? styles['override-medium-active'] : ''}`}
-                    disabled={!currentResult || currentResult.status === 'in_progress'}
-                    onClick={() => handleOverride('medium')} title={t('verification.markAsMedium')}
-                  >~</button>
-                  <button
-                    className={`${styles['override-btn']} ${styles['override-low']} ${currentResult?.status === 'low' ? styles['override-low-active'] : ''}`}
-                    disabled={!currentResult || currentResult.status === 'in_progress'}
-                    onClick={() => handleOverride('low')} title={t('verification.markAsLow')}
-                  >X</button>
                 </div>
 
                 <div className={styles['detail-search-actions']}>

@@ -173,7 +173,7 @@
     "sort": {
       "byStatus": "Sort by status",
       "byName": "Sort by name",
-      "byNumbered": "Sort by numbered (unnumbered first)",
+      "byNumbered": "Sort by numbered",
       "byCount": "Sort by source count",
       "name": "Name"
     },
@@ -406,6 +406,8 @@
       "title": "Title similarity is below 85%"
     },
     "exportPdf": "Export Verification Results to PDF",
+    "hideValid": "Show all except Valid",
+    "showAllCards": "Show all cards",
     "exportPdfRunning": "Export disabled while verification is running",
     "exportPdfNoResults": "No verification results to export.",
     "exportPdfBatch": "Export reports for PDFs above the cutoff",

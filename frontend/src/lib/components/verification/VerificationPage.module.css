@@ -359,17 +359,32 @@
   border-bottom: 1px solid #e7e5e4;
 }
 .toolbar-left { display: flex; align-items: center; gap: 10px; justify-self: start; }
+/* The card-toolbar ref may give the narrower group a min-width so both
+   groups' inner edges mirror around the tab centre; buttons grow to fill. */
+.toolbar-left > button { flex: 1 1 auto; }
+.toolbar-right > .sort-dropdown { flex: 1 1 auto; }
+.toolbar-right > .sort-dropdown > button { flex: 1 1 auto; }
 .toolbar-center { justify-self: stretch; width: auto; min-width: 0; padding: 0 12px; }
-.toolbar-search {
+.toolbar-search-wrap {
+  /* Centred under the header tabs. --search-left/--search-width are set by
+     the card-toolbar ref in VerificationPage.tsx so both gaps to the button
+     groups are equal. Fallback: full tab-nav span. */
   position: absolute;
   top: 50%;
   transform: translateY(-50%);
-  left: calc(var(--tab-left-vp, 0px) - 280px);
-  width: calc(var(--tab-right-vp, 100%) - var(--tab-left-vp, 0px));
+  left: var(--search-left, calc(var(--tab-left-vp, 0px) - 280px));
+  width: var(--search-width, calc(var(--tab-right-vp, 100%) - var(--tab-left-vp, 0px)));
+  height: 26px;
+}
+.toolbar-search {
+  display: block;
+  width: 100%;
   height: 26px;
   font-size: 11px;
   font-weight: 600;
-  padding: 0 12px;
+  /* Symmetric padding keeps the placeholder centred despite the export
+     button sitting inside the right end. */
+  padding: 0 30px;
   border: 1px solid #d6d3d1;
   border-radius: 5px;
   background: white;
@@ -384,6 +399,26 @@
   box-shadow: 0 0 0 2px rgba(168, 162, 158, 0.2);
 }
 .toolbar-search::placeholder { color: #a8a29e; text-align: center; }
+.search-export-btn {
+  position: absolute;
+  top: 50%;
+  right: 3px;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #78716c;
+  cursor: pointer;
+  transition: color 0.1s, background 0.1s;
+}
+.search-export-btn:hover:not(:disabled) { color: #d97706; background: #fef3c7; }
+.search-export-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .toolbar-btn {
   display: inline-flex;
   align-items: center;
@@ -423,6 +458,8 @@
 .toolbar-btn-accent:hover { background: #d97706; color: white; border-color: #d97706; }
 .toolbar-btn-export { padding: 0 6px; }
 .toolbar-btn-export:hover:not(:disabled) { border-color: #3b82f6; color: #3b82f6; }
+.toolbar-btn-filter-active,
+.toolbar-btn-filter-active:hover:not(:disabled) { border-color: #3b82f6; background: #eff6ff; color: #3b82f6; }
 
 .toolbar-right { display: flex; align-items: center; gap: 6px; justify-self: end; }
 
@@ -996,7 +1033,24 @@
   align-items: center;
   gap: 6px;
 }
-.detail-action-spacer { flex: 1; }
+/* Verify button sits centred between the [ref] badge and the match button. */
+.detail-top-center { flex: 1; display: flex; justify-content: center; align-items: center; }
+/* Match button column lines up with the header's settings icon (App.module.css
+   .status-icon-ring: 40px wide, margin-right 26px → centre 46px from the right
+   window edge). Both panels are flush right, so: 40px slot whose centre is
+   46px from the edge = 16px row padding + 10px margin + 20px half-slot. */
+.detail-top-match {
+  width: 40px;
+  margin-right: 10px;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+/* Decision buttons share the row width equally, like the Scholar/Google row. */
+.detail-action-row .detail-decision-pill { flex: 1 1 0; min-width: 0; }
+.detail-decision-pill.detail-decision-inactive { background: white; color: #a8a29e; border-color: #d6d3d1; }
+.detail-decision-pill.detail-decision-inactive:hover { filter: none; color: #44403c; border-color: #a8a29e; }
 .detail-decision-pill {
   font-size: 11px;
   padding: 0 12px;
@@ -1010,8 +1064,6 @@
 }
 
 /* Actions */
-.detail-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.detail-top-row .detail-actions { margin-left: auto; }
 .override-btn {
   width: 28px;
   height: 28px;
@@ -1107,7 +1159,7 @@
   border: none;
   padding: 0;
   font-size: 11px;
-  color: #d97706;
+  color: #3b82f6;
   cursor: pointer;
   text-align: left;
   word-break: break-all;
@@ -1294,7 +1346,7 @@
   padding: 2px 8px;
 }
 .match-pill .match-score { align-self: center; }
-.match-pill-arrow { font-size: 9px; color: #d97706; font-weight: 700; align-self: center; }
+.match-pill-arrow { font-size: 9px; color: #3b82f6; font-weight: 700; align-self: center; }
 .match-empty { font-size: 11px; color: #a8a29e; }
 
 .match-toggle {
@@ -1362,12 +1414,12 @@
   cursor: pointer;
   text-align: left;
   font: inherit;
-  color: #d97706;
+  color: #3b82f6;
   padding: 0;
 }
 .db-link:hover { text-decoration: underline; }
 .db-link-unsearched { color: #a8a29e; }
-.db-link-unsearched:hover { color: #d97706; }
+.db-link-unsearched:hover { color: #3b82f6; }
 .db-score { font-size: 10px; font-weight: 700; flex-shrink: 0; }
 .db-pending { color: #d6d3d1; }
 
