@@ -24,10 +24,10 @@ Compared with the Electron implementation:
   ``console.log`` channel that any website could spoof.
   ``IsWebMessageEnabled`` is off, so ``chrome.webview`` is never exposed to
   third-party pages.
-* Tracker requests are blocked everywhere, and images/fonts/media are
-  blocked on scholar.google.com only. The same rules as before, but scoped
-  with WebView2 resource filters so other requests never round-trip
-  through Python.
+* Tracker requests (analytics/ad hosts) are blocked, scoped with WebView2
+  resource filters so other requests never round-trip through Python.
+  Scholar's own images/fonts/media load normally: a session that never
+  fetches static assets is itself a bot signal.
 """
 
 from __future__ import annotations
@@ -62,7 +62,6 @@ TRACKER_HOST_PATTERNS = (
     "*doubleclick.net/*",
     "*googleadservices.com/*",
 )
-SCHOLAR_HEAVY_CONTEXTS = ("Image", "Font", "Media")
 
 # Mouse thumb buttons navigate the guest's history (Electron's guest did this
 # natively; WebView2 does not by default).
@@ -220,10 +219,6 @@ class GuestView:
     def _install_resource_filters(self, core: Any) -> None:
         for pattern in TRACKER_HOST_PATTERNS:
             core.AddWebResourceRequestedFilter(pattern, CoreWebView2WebResourceContext.All)
-        for context in SCHOLAR_HEAVY_CONTEXTS:
-            core.AddWebResourceRequestedFilter(
-                "https://scholar.google.com/*", getattr(CoreWebView2WebResourceContext, context)
-            )
         core.WebResourceRequested += self._on_resource_requested
 
     # ---- events --------------------------------------------------------------
@@ -252,7 +247,17 @@ class GuestView:
             self._emit("did-navigate", url=str(self.core.Source))
 
     def _on_navigation_completed(self, sender: Any, args: Any) -> None:
-        if not args.IsSuccess:
+        # WebView2 reports IsSuccess=False for HTTP 4xx/5xx responses too,
+        # while Electron's did-fail-load fired only for network-level
+        # failures. Google serves its CAPTCHA ("sorry") page as HTTP 429, so
+        # treating that as a failed load made the Scholar scanner skip the
+        # source instead of showing the CAPTCHA. A response with an HTTP
+        # status is a page that loaded; only report real load failures.
+        try:
+            http_status = int(getattr(args, "HttpStatusCode", 0) or 0)
+        except Exception:  # noqa: BLE001
+            http_status = 0
+        if not args.IsSuccess and http_status == 0:
             self._emit(
                 "did-fail-load",
                 errorCode=_error_code(args.WebErrorStatus),
@@ -315,10 +320,6 @@ class GuestView:
         uri = str(args.Request.Uri)
         blocked = any(host in uri for host in ("google-analytics.com", "googletagmanager.com",
                                                "doubleclick.net", "googleadservices.com"))
-        if not blocked and uri.startswith("https://scholar.google.com/"):
-            blocked = str(args.ResourceContext) in {
-                str(getattr(CoreWebView2WebResourceContext, c)) for c in SCHOLAR_HEAVY_CONTEXTS
-            }
         if blocked:
             args.Response = self.core.Environment.CreateWebResourceResponse(None, 403, "Blocked", "")
 

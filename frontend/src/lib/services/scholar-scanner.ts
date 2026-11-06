@@ -178,13 +178,24 @@ const POLL_AND_EXTRACT_SCRIPT = `
 
 // --- Rate limiter ---
 
+// One instance lives for the whole app session (the scanner is a singleton)
+// and is deliberately never reset between scans: "Verify All" starting the
+// next PDF's scan, or several single-card verifies in a row, must keep the
+// same spacing from the previous Scholar request and the same post-CAPTCHA
+// slowdown. Resetting per scan used to send those first searches in a burst.
+const CAPTCHA_PENALTY_DECAY_MS = 30 * 60 * 1000
+
 class ScholarRateLimiter {
   private baseDelay = 4000
   private lastRequest = 0
   private captchaCount = 0
+  private lastCaptchaAt = 0
   private requestsSinceCaptcha = Infinity
 
   async waitForSlot(): Promise<void> {
+    if (this.captchaCount > 0 && Date.now() - this.lastCaptchaAt > CAPTCHA_PENALTY_DECAY_MS) {
+      this.captchaCount = 0
+    }
     const jitter = Math.random() * 3000
     let delay = this.baseDelay + jitter
 
@@ -199,19 +210,32 @@ class ScholarRateLimiter {
     if (elapsed < delay) {
       await sleep(delay - elapsed)
     }
+    this.markRequest()
+  }
+
+  // Shorter gap for a follow-up request tied to the page just loaded (the
+  // APA "Cite" fetch): 1.5–3 s after the previous request, like a reader
+  // clicking "Cite", instead of firing within a second of the page load.
+  async waitForFollowUp(): Promise<void> {
+    const delay = 1500 + Math.random() * 1500
+    const elapsed = Date.now() - this.lastRequest
+    if (elapsed < delay) {
+      await sleep(delay - elapsed)
+    }
+    this.markRequest()
+  }
+
+  // Record a Scholar request that did not go through waitForSlot(), so the
+  // next search is spaced from it.
+  markRequest(): void {
     this.lastRequest = Date.now()
     this.requestsSinceCaptcha++
   }
 
   onCaptcha(): void {
     this.captchaCount++
+    this.lastCaptchaAt = Date.now()
     this.requestsSinceCaptcha = 0
-  }
-
-  reset(): void {
-    this.lastRequest = 0
-    this.captchaCount = 0
-    this.requestsSinceCaptcha = Infinity
   }
 }
 
@@ -338,7 +362,6 @@ export class ScholarScanner {
     this.foundCount = 0
     this.cancelRequested = false
     const gen = ++this.scanGeneration
-    this.rateLimiter.reset()
     this.setStatus('scanning')
     this.callbacks?.onProgress(0, queue.length, 0)
     await this.processNext(gen)
@@ -408,6 +431,7 @@ export class ScholarScanner {
     if (candidates === null) {
       const url = buildSearchUrl(item.searchText)
       console.log('[Scholar] Overlay extraction unavailable; retrying via hidden webview')
+      this.rateLimiter.markRequest()
       try {
         const result = await this.loadAndExtract(url)
         if (superseded()) return
@@ -523,6 +547,8 @@ export class ScholarScanner {
         }
         const top = candidates[topIdx]
         if (top.scraped_truncated && top.cid) {
+          await this.rateLimiter.waitForFollowUp()
+          if (superseded()) return
           const apa = await this.fetchApaForCid(top.cid)
           if (apa) {
             top.apa_citation = apa
@@ -621,15 +647,18 @@ export class ScholarScanner {
         }
       }
 
+      // A main-frame load failure is not settled here: did-stop-loading always
+      // follows, and the page may still be Google's CAPTCHA (served with an
+      // error status). onLoaded probes it first and only rejects when the
+      // page is neither a CAPTCHA nor a results page — otherwise a CAPTCHA
+      // reported as a failed load silently skipped the source.
+      let loadError: string | null = null
       const onFailed = (e: any): void => {
         if (settled) return
         // Sub-frame failures (ads, trackers) and ERR_ABORTED (-3, a superseded
         // navigation) don't mean the results page failed to load.
         if (e?.isMainFrame === false || e?.errorCode === -3) return
-        settled = true
-        clearTimeout(timeoutId)
-        cleanup()
-        reject(new Error(`Load failed: ${e?.errorDescription || 'unknown'}`))
+        loadError = e?.errorDescription || 'unknown'
       }
 
       const onLoaded = async (): Promise<void> => {
@@ -658,6 +687,10 @@ export class ScholarScanner {
             resolve('captcha')
             return
           }
+          if (loadError !== null && !(extraction && Array.isArray(extraction.results) && extraction.results.length > 0)) {
+            reject(new Error(`Load failed: ${loadError}`))
+            return
+          }
           if (extraction && Array.isArray(extraction.results)) {
             resolve(extraction.results)
             return
@@ -680,7 +713,7 @@ export class ScholarScanner {
             resolve([])
             return
           }
-          reject(new Error(`Extraction failed: ${err}`))
+          reject(new Error(loadError !== null ? `Load failed: ${loadError}` : `Extraction failed: ${err}`))
         }
       }
 

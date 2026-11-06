@@ -43,7 +43,7 @@ Google may still show CAPTCHAs based on IP and request rate, which the existing 
 - **Native views and HTML overlays:** a native child window paints above the page. The HTML find bar is marked `data-webview-occluder`, and the host cuts it out of the native view's window region.
 - **Tab visibility:** inactive tabs (`display:none`) report no client rects, so the native overlay hides.
 - **The hidden scanner** stays alive off-screen at 1280×800 (`background` attribute), so timers aren't throttled.
-- **Resource blocking** uses WebView2 resource filters scoped to tracker hosts and to scholar.google.com images/fonts/media. Other requests never round-trip through Python.
+- **Resource blocking** uses WebView2 resource filters scoped to tracker hosts. Other requests never round-trip through Python. Scholar's own images/fonts/media are no longer blocked: a session that never loads static assets looks less like a normal browser.
 - **Dropped files:** WebView2 gives no path on `File` objects. The page posts the files with `postMessageWithAdditionalObjects`, and the host returns their paths.
 
 ---
