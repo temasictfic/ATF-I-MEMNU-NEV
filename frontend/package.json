@@ -1,8 +1,8 @@
 {
   "name": "atfi-memnu-frontend",
   "private": true,
-  "version": "3.1.0",
-  "description": "React UI of Atf-\u0131 Memnu (Kaynak\u00e7a Kontrol Sistemi), hosted in WebView2 by the Python shell",
+  "version": "3.2.0",
+  "description": "React UI of Atf-ı Memnu (Kaynakça Kontrol Sistemi), hosted in WebView2 by the Python shell",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -1,6 +1,6 @@
 [project]
 name = "atfi-memnu"
-version = "3.1.0"
+version = "3.2.0"
 description = "Atf-ı Memnu (Kaynakça Kontrol Sistemi): citation extraction and verification desktop app"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
