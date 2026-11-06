@@ -264,7 +264,7 @@ Done in this (Linux) environment:
 - The real model download from the mirror, SHA-256 verification and the hot reload of the backend NER all worked.
 - Live database queries couldn't be exercised: this sandbox's network allowlist blocks those hosts, and the requests reached the proxy and were refused.
 
-**Not verifiable here (needs Windows).** CI covers part of it: `ci.yml` builds on `windows-latest` and runs `--smoke-test`. The smoke test launches the real exe, waits for the UI, creates the hidden Scholar WebView2 view, runs an async `executeJavaScript` through it, and saves a screenshot. Please check by hand:
+**Not verifiable here (needs Windows).** CI covers part of it: `release.yml` builds on `windows-latest` and runs `--smoke-test`. The smoke test launches the real exe, waits for the UI, creates the hidden Scholar WebView2 view, runs an async `executeJavaScript` through it, and saves a screenshot. Please check by hand:
 
 - [ ] Scholar overlay: position and resize at 100% / 150% DPI; the find bar visible through the overlay; switching tabs hides it.
 - [ ] CAPTCHA flow: the overlay opens, solving it auto-resumes the scanner, and cookies are shared with the hidden scanner.

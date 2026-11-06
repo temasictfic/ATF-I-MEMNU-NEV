@@ -16,11 +16,17 @@
   Refuses to run unless you are on main, the working tree is clean, main is
   not behind origin, and the tag does not exist locally or on origin.
 
+  Before bumping, runs the same checks as CI: frontend typecheck + tests,
+  ruff, pytest. Any failure stops the release with nothing changed.
+
 .PARAMETER Bump
   major | minor | patch
 
 .PARAMETER DryRun
-  Show the new version and what would happen; change nothing.
+  Run the preflight and checks, show the new version; change nothing.
+
+.PARAMETER SkipChecks
+  Skip typecheck, lint and tests (CI still runs them before publishing).
 
 .PARAMETER NoPush
   Commit and tag locally but do not push. Push later with:
@@ -39,6 +45,7 @@ param(
     [ValidateSet('major', 'minor', 'patch')]
     [string]$Bump,
     [switch]$DryRun,
+    [switch]$SkipChecks,
     [switch]$NoPush,
     [switch]$Yes
 )
@@ -112,6 +119,29 @@ try {
     Write-Host "Version  $old -> $new  ($Bump)" -ForegroundColor Green
     Write-Host "Tag      $tag"
     if ($unpushed -gt 0) { Write-Host "Note     $unpushed unpushed commit(s) on $branch will be pushed with the release." -ForegroundColor Yellow }
+
+    # ---- checks (same as the release workflow's checks job) -------------------
+    if ($SkipChecks) {
+        Write-Host "`nSkipping typecheck, lint and tests (-SkipChecks)." -ForegroundColor Yellow
+    }
+    else {
+        Step 'Frontend typecheck + tests'
+        Push-Location (Join-Path $root 'frontend')
+        try {
+            npm run typecheck; Check 'npm run typecheck'
+            npm test; Check 'npm test'
+        }
+        finally { Pop-Location }
+
+        Step 'Python lint + tests'
+        uv run --frozen ruff check atfi_app backend tests; Check 'ruff'
+        uv run --frozen pytest; Check 'pytest'
+
+        # Tests must not leave files behind; the bump commit only takes the
+        # version files, but a dirty tree here usually means a test bug.
+        $dirty = git status --porcelain
+        if ($dirty) { throw "Checks modified the working tree:`n$($dirty -join "`n")" }
+    }
 
     if ($DryRun) {
         Write-Host "`nDry run: nothing changed." -ForegroundColor Yellow
