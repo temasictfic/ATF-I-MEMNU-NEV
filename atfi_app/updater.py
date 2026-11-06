@@ -246,9 +246,11 @@ class Updater:
         subprocess.Popen(args, close_fds=True, creationflags=creationflags)  # noqa: S603
         return True
 
-    def install_pending_on_quit(self) -> None:
+    def install_pending_on_quit(self) -> bool:
+        """Start a downloaded update's installer; True if one was launched."""
         if self.enabled and self.install_on_quit and self.installer_path() is not None:
-            self.launch_installer(relaunch=False)
+            return self.launch_installer(relaunch=False)
+        return False
 
 
 def _checksum_for(sums_text: str, name: str) -> str | None:

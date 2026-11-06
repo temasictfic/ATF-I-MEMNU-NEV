@@ -89,6 +89,8 @@ class WebView2Platform:
         self._on_shown: Callable[[], None] | None = None
         self._window_store: WindowStateStore | None = None
         self._placement: Placement | None = None
+        self._browser_lost = False
+        self.restart_requested = False  # read by app.main after the window closes
 
     # ---- lifecycle -------------------------------------------------------------
 
@@ -304,12 +306,38 @@ class WebView2Platform:
         self._drops.push(paths)
 
     def _on_process_failed(self, sender: Any, args: Any) -> None:
-        logger.error("WebView2 process failed: %s", args.ProcessFailedKind)
-        if "BrowserProcessExited" in str(args.ProcessFailedKind) or "RenderProcessExited" in str(args.ProcessFailedKind):
+        kind = str(args.ProcessFailedKind)
+        logger.error("WebView2 process failed: %s", kind)
+        if "BrowserProcessExited" in kind:
+            # The browser process hosts every view. Its controllers are dead
+            # (CoreWebView2 is None) and cannot be reloaded; the window stays
+            # black until the app is restarted.
+            if not self._browser_lost:
+                self._browser_lost = True
+                self._ui.post(self._offer_restart)
+            return
+        if "RenderProcessExited" in kind:
             try:
                 self._main_ctrl.CoreWebView2.Reload()
             except Exception:  # noqa: BLE001
                 logger.exception("Reload after process failure failed")
+
+    def _offer_restart(self) -> None:
+        MB_YESNO, MB_ICONERROR, IDYES = 0x4, 0x10, 6
+        message = (
+            "Uygulamanın tarayıcı bileşeni beklenmedik şekilde kapandı.\n"
+            "Uygulama yeniden başlatılsın mı? (Hayır: uygulama kapanır)\n\n"
+            "The app's browser component stopped unexpectedly.\n"
+            "Restart the app now? (No closes it)"
+        )
+        try:
+            owner = ctypes.c_void_p(int(self._form.Handle.ToInt64()))
+        except Exception:  # noqa: BLE001
+            owner = None
+        answer = ctypes.windll.user32.MessageBoxW(owner, message, "Atf-ı Memnu", MB_YESNO | MB_ICONERROR)
+        self.restart_requested = answer == IDYES
+        logger.info("Browser process lost; restart %s", "requested" if self.restart_requested else "declined")
+        self._form.Close()
 
     # ---- Platform API (worker threads) ---------------------------------------
 

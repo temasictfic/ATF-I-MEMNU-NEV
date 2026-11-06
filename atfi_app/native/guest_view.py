@@ -46,6 +46,7 @@ from Microsoft.Web.WebView2.Core import (  # type: ignore[import-not-found]
 from Microsoft.Web.WebView2.WinForms import WebView2  # type: ignore[import-not-found]
 from System.Drawing import Point, Rectangle, Region, Size  # type: ignore[import-not-found]
 from System.Reflection import BindingFlags  # type: ignore[import-not-found]
+from System.Windows.Forms import Timer  # type: ignore[import-not-found]
 
 from ..events import HostEvents
 from .ui_thread import UiThread, wait_task
@@ -55,6 +56,7 @@ logger = logging.getLogger("atfi.native.guest")
 SCHOLAR_PROFILE = "scholar-panel"
 MIN_ZOOM, MAX_ZOOM = 0.5, 3.0  # frontend/src/lib/constants/timings.ts
 BACKGROUND_SIZE = (1280, 800)  # CSS px, as the Electron hidden scanner
+DISPOSE_DELAY_MS = 1500  # a closed view stays hidden this long before it is disposed
 
 TRACKER_HOST_PATTERNS = (
     "*google-analytics.com/*",
@@ -137,6 +139,8 @@ class GuestView:
         self.core: Any = None
         self._find_request_id = 0
         self._last_bounds: tuple[int, int, int, int] | None = None
+        self.closed = False
+        self._dispose_timer: Any = None
 
         ctrl = WebView2()
         self.ctrl = ctrl
@@ -166,6 +170,10 @@ class GuestView:
             logger.error("Guest view %s failed to initialize: %s", self.id, self.failed)
             self.ready.set()
             return
+        if self.closed:  # closed before it finished initializing
+            self.failed = "webview was closed"
+            self.ready.set()
+            return
         core = self.ctrl.CoreWebView2
         self.core = core
         settings = core.Settings
@@ -175,6 +183,16 @@ class GuestView:
         settings.IsZoomControlEnabled = True  # native Ctrl+wheel; clamped below
         settings.IsStatusBarEnabled = True
         settings.AreDefaultScriptDialogsEnabled = True
+        # No Edge autofill / save-password popups. On Google's sign-in page
+        # the autofill popup attaches to this view, and closing the overlay
+        # (Esc) while it was being torn down crashed the shared browser
+        # process (access violation in msedge.dll), which blacked out the
+        # whole app. Sign-in still persists through the profile's cookies.
+        for name in ("IsGeneralAutofillEnabled", "IsPasswordAutosaveEnabled"):
+            try:
+                setattr(settings, name, False)
+            except Exception:  # noqa: BLE001  (older runtimes lack some settings)
+                logger.debug("WebView2 setting %s unavailable", name)
 
         core.ContentLoading += self._on_content_loading
         core.NavigationStarting += lambda s, e: self._emit("did-start-loading")
@@ -238,6 +256,8 @@ class GuestView:
             return {}
 
     def _emit(self, event_type: str, **fields: Any) -> None:
+        if self.closed:
+            return  # the page's element is gone; e.g. the about:blank teardown
         self.manager.events.publish(
             "webview", {"id": self.id, "type": event_type, "state": self._state(), **fields}
         )
@@ -326,7 +346,7 @@ class GuestView:
     # ---- operations (UI thread) ----------------------------------------------
 
     def set_bounds(self, bounds: dict[str, Any]) -> None:
-        if self.background:
+        if self.background or self.closed:
             return
         rect = bounds.get("rect") or None
         visible = bool(bounds.get("visible")) and rect is not None
@@ -357,11 +377,48 @@ class GuestView:
             self.ctrl.BringToFront()
 
     def destroy(self) -> None:
+        """Hide the view now and dispose it once the browser has let go of it.
+
+        Disposing the controller right away, while the browser process is
+        still handling the key press that closed the overlay (or closing a
+        popup anchored to this view), can crash the shared browser process
+        and take every view down with it. Hiding the view and moving it to
+        about:blank first lets that work finish against a live window.
+        """
+        if self.closed:
+            return
+        self.closed = True
         try:
-            self.manager.form.Controls.Remove(self.ctrl)
+            self.ctrl.Visible = False
+        except Exception:  # noqa: BLE001
+            logger.debug("guest hide failed", exc_info=True)
+        if self.core is not None:
+            try:
+                self.core.Stop()
+                self.core.Navigate("about:blank")
+            except Exception:  # noqa: BLE001
+                logger.debug("guest blank navigation failed", exc_info=True)
+        timer = Timer()
+        timer.Interval = DISPOSE_DELAY_MS
+        self._dispose_timer = timer  # keep a reference until it fires
+
+        def fire(sender: Any, args: Any) -> None:
+            timer.Stop()
+            timer.Dispose()
+            self._dispose_timer = None
+            self._dispose()
+
+        timer.Tick += fire
+        timer.Start()
+
+    def _dispose(self) -> None:
+        try:
+            if not self.manager.form.IsDisposed:
+                self.manager.form.Controls.Remove(self.ctrl)
             self.ctrl.Dispose()
         except Exception:  # noqa: BLE001
             logger.debug("guest dispose failed", exc_info=True)
+        self.manager.closing.discard(self)
 
     def call_ui(self, method: str, args: list[Any]) -> Any:
         """Synchronous operations; runs on the UI thread once the view is ready."""
@@ -422,6 +479,7 @@ class GuestViewManager:
         self.events = events
         self.ui = ui
         self.views: dict[str, GuestView] = {}
+        self.closing: set[GuestView] = set()  # hidden, waiting to be disposed
 
     @property
     def environment(self) -> Any:
@@ -439,6 +497,7 @@ class GuestViewManager:
         def make() -> None:
             old = self.views.pop(view_id, None)
             if old is not None:
+                self.closing.add(old)
                 old.destroy()
             self.views[view_id] = GuestView(self, view_id, options or {})
 
@@ -448,6 +507,7 @@ class GuestViewManager:
         def drop() -> None:
             view = self.views.pop(view_id, None)
             if view is not None:
+                self.closing.add(view)
                 view.destroy()
 
         self.ui.post(drop)

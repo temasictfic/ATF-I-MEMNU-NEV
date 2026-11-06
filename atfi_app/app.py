@@ -170,8 +170,28 @@ def main(argv: list[str] | None = None) -> int:
         if instance is not None:
             instance.close()
         host.stop()
-        updater.install_pending_on_quit()
+        installing = updater.install_pending_on_quit()
+    # After the single-instance lock is released, so the new process doesn't
+    # just hand off to this one. A pending update's installer relaunches
+    # nothing, so skip it then rather than race the installer for files.
+    if getattr(platform, "restart_requested", False) and not installing:
+        _relaunch()
     return exit_code
+
+
+def _relaunch() -> None:
+    import subprocess
+
+    if paths.IS_FROZEN:
+        cmd = [sys.executable, *sys.argv[1:]]
+    else:
+        cmd = [sys.executable, "-m", "atfi_app", *sys.argv[1:]]
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        subprocess.Popen(cmd, close_fds=True, creationflags=flags)  # noqa: S603
+        logger.info("Relaunched: %s", cmd)
+    except OSError:
+        logger.exception("Relaunch failed")
 
 
 def _run_dev_browser(host: Any, platform: Any, *, open_browser: bool) -> int:
