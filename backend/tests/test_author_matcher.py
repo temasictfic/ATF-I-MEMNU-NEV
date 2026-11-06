@@ -369,3 +369,11 @@ if __name__ == "__main__":
     failures = _run(tests)
     print(f"\n{len(tests) - failures}/{len(tests)} passed")
     sys.exit(1 if failures else 0)
+
+
+def test_parse_author_punctuation_only_placeholder() -> None:
+    # Crossref sometimes ships placeholder authors (family="...", given="...")
+    # which the verifier joins into "..., ...". This used to raise IndexError.
+    for raw in ("..., ...", ". , .", "., ;", "...", " , "):
+        assert parse_author(raw).last == ""
+    assert author_score(["Tümer, A.", "Baybek, H."], ["..., ..."]) == 0.0

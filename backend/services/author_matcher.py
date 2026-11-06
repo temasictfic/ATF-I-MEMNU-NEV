@@ -158,7 +158,10 @@ def parse_author(raw: str) -> ParsedName:
     # separator and drop trailing ellipsis/et-al markers.
     s = _GS_METADATA_RE.sub("", raw)
     s = re.sub(r"[\u2026…]+\s*$", "", s)  # trailing unicode ellipsis
-    s = s.strip().strip(".,;")
+    # Trailing .strip() matters: Crossref placeholder authors like
+    # family="...", given="..." arrive as "..., ...", which the punctuation
+    # strip reduces to " " — non-empty, but splits into zero tokens.
+    s = s.strip().strip(".,;").strip()
     if not s:
         return ParsedName("", (), None, raw)
 
