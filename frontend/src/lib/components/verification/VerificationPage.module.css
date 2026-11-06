@@ -995,11 +995,14 @@
   text-align: center;
 }
 
+/* Same three equal columns + 6px gap as .detail-action-row below (both rows
+   have 16px side padding), so the Verify button sits exactly above the
+   Citation pill with the same width and the same spacing to its neighbours. */
 .detail-top-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
   height: 48px;
   min-height: 48px;
   padding: 0 16px;
@@ -1025,6 +1028,7 @@
   flex-shrink: 0;
   box-sizing: border-box;
   line-height: 1;
+  justify-self: start;
 }
 .detail-ref-badge:hover { border-color: #d97706; background: #fde68a; }
 
@@ -1033,8 +1037,21 @@
   align-items: center;
   gap: 6px;
 }
-/* Verify button sits centred between the [ref] badge and the match button. */
-.detail-top-center { flex: 1; display: flex; justify-content: center; align-items: center; }
+/* Verify button fills the middle column, matching the Citation pill below. */
+.detail-top-center { display: flex; align-items: center; min-width: 0; }
+.detail-top-center > .action-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 28px;
+  padding: 0 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
 /* Match button column lines up with the header's settings icon (App.module.css
    .status-icon-ring: 40px wide, margin-right 26px → centre 46px from the right
    window edge). Both panels are flush right, so: 40px slot whose centre is
@@ -1042,6 +1059,7 @@
 .detail-top-match {
   width: 40px;
   margin-right: 10px;
+  justify-self: end;
   flex-shrink: 0;
   display: flex;
   justify-content: center;
