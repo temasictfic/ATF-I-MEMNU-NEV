@@ -1,6 +1,6 @@
 """Single source of truth for the app version and release coordinates."""
 
-__version__ = "3.2.2"
+__version__ = "3.2.3"
 
 PRODUCT_NAME = "Kaynakça Kontrol Sistemi"
 WINDOW_TITLE = "ARDEB · Kaynakça Kontrol Sistemi"
