@@ -58,4 +58,7 @@ include = ["atfi_app", "backend"]
 exclude = ["**/node_modules", "**/__pycache__", "**/.*", "**/build", "**/dist", "backend/training", "backend/tests", "tests"]
 venvPath = "."
 venv = ".venv"
+# backend/ is put on sys.path at runtime (atfi_app/backend_host.py), so its
+# modules import as top-level packages (`services`, `api`, ...).
+extraPaths = ["backend"]
 typeCheckingMode = "standard"
